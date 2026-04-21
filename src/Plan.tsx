@@ -161,6 +161,16 @@ function PlanView({
     () => state.iterations.flatMap(weeksOfIteration),
     [state.iterations],
   );
+  const currentIterationId = useMemo<ID | null>(() => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    for (const it of state.iterations) {
+      const start = parseISODate(it.startDate);
+      const end = addDays(start, 14);
+      if (today >= start && today < end) return it.id;
+    }
+    return null;
+  }, [state.iterations]);
   const plannedByProject = useMemo(() => {
     const map: Record<ID, number> = {};
     for (const a of state.assignments) {
@@ -270,6 +280,29 @@ function PlanView({
     if (confirm('Clear all assignments?')) setState(s => ({ ...s, assignments: [] }));
   };
 
+  /* Auto-scroll the chart so the current iteration is the first one visible.
+   * Runs when the current iteration changes (e.g. after the plan loads from
+   * the server, or after editing iteration dates). Past iterations remain
+   * accessible by scrolling left. */
+  const chartScrollRef = useRef<HTMLDivElement | null>(null);
+  const lastScrolledIterRef = useRef<ID | null>(null);
+  useEffect(() => {
+    if (!currentIterationId) return;
+    if (lastScrolledIterRef.current === currentIterationId) return;
+    const scroller = chartScrollRef.current;
+    if (!scroller) return;
+    const target = scroller.querySelector<HTMLElement>(
+      `[data-iter-id="${currentIterationId}"]`,
+    );
+    if (!target) return;
+    // The Person column is sticky on the left, so we want the iteration
+    // header to land just to the right of it (≈ 200px wide column + a bit).
+    const stickyOffset = 200;
+    const left = target.offsetLeft - stickyOffset - 8;
+    scroller.scrollTo({ left: Math.max(0, left), behavior: 'smooth' });
+    lastScrolledIterRef.current = currentIterationId;
+  }, [currentIterationId]);
+
   /* projects panel state */
   const [panel, setPanel] = useState<{ collapsed: boolean; height: number }>(() => {
     try {
@@ -327,11 +360,12 @@ function PlanView({
 
       <div className="flex min-h-0 flex-1 flex-col">
         {/* Chart pane */}
-        <div className="min-h-0 flex-1 overflow-auto p-4 pb-6">
+        <div ref={chartScrollRef} className="min-h-0 flex-1 overflow-auto p-4 pb-6">
           <Chart
             state={state}
             allWeeks={allWeeks}
             projectsById={projectsById}
+            currentIterationId={currentIterationId}
             renamePerson={renamePerson}
             removePerson={removePerson}
             addPerson={addPerson}
@@ -504,6 +538,7 @@ function Chart(props: {
   state: State;
   allWeeks: WeekInfo[];
   projectsById: Record<ID, Project>;
+  currentIterationId: ID | null;
   renamePerson: (id: ID, name: string) => void;
   removePerson: (id: ID) => void;
   addPerson: (name?: string) => void;
@@ -513,11 +548,60 @@ function Chart(props: {
   moveAssignment: (assignmentId: ID, personId: ID, weekId: string) => void;
   removeAssignment: (id: ID) => void;
 }) {
-  const { state, allWeeks, projectsById } = props;
+  const { state, allWeeks, projectsById, currentIterationId } = props;
   const [picker, setPicker] = useState<{ personId: ID; weekId: string; rect: DOMRect } | null>(null);
 
+  /* ------ Click-drag-to-extend ------
+   * When the user grabs the right edge of a chip and drags right, we add
+   * assignments for the same project in the consecutive weeks they hover.
+   * Live preview is stored in `extending`; we commit on mouseup.
+   */
+  const [extending, setExtending] = useState<null | {
+    personId: ID;
+    projectId: ID;
+    fromIdx: number;
+    toIdx: number;
+  }>(null);
+
+  const startExtend = (personId: ID, projectId: ID, weekId: string) => {
+    const fromIdx = allWeeks.findIndex(w => w.id === weekId);
+    if (fromIdx === -1) return;
+    setExtending({ personId, projectId, fromIdx, toIdx: fromIdx });
+
+    const onMove = (e: MouseEvent) => {
+      const el = (document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null)?.closest(
+        '[data-cell="1"]',
+      ) as HTMLElement | null;
+      if (!el) return;
+      if (el.dataset.pid !== personId) return;
+      const idx = allWeeks.findIndex(w => w.id === el.dataset.wid);
+      if (idx < fromIdx) return; // only extend forward
+      setExtending(prev => (prev && prev.toIdx !== idx ? { ...prev, toIdx: idx } : prev));
+    };
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      setExtending(curr => {
+        if (curr) {
+          for (let i = curr.fromIdx + 1; i <= curr.toIdx; i++) {
+            const w = allWeeks[i];
+            if (w) props.addAssignment(curr.personId, w.id, curr.projectId);
+          }
+        }
+        return null;
+      });
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
+
   return (
-    <div className="inline-block min-w-full overflow-hidden rounded-2xl border border-ink-200 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04),0_8px_24px_-12px_rgba(15,23,42,0.08)]">
+    <div
+      className={
+        'inline-block min-w-full overflow-hidden rounded-2xl border border-ink-200 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04),0_8px_24px_-12px_rgba(15,23,42,0.08)]' +
+        (extending ? ' select-none' : '')
+      }
+    >
       <table className="border-separate border-spacing-0">
         <thead>
           {/* Iteration row */}
@@ -528,51 +612,72 @@ function Chart(props: {
             >
               Person
             </th>
-            {state.iterations.map((iter, idx) => (
-              <th
-                key={iter.id}
-                colSpan={2}
-                className={
-                  'sticky top-0 z-20 h-9 border-b border-r-2 border-ink-200 border-r-ink-300 px-2 text-[11px] font-semibold uppercase tracking-[0.08em] ' +
-                  (idx % 2 === 0 ? 'bg-brand-50 text-brand-700' : 'bg-indigo-50 text-indigo-700')
-                }
-              >
-                <div className="flex items-center justify-center gap-1.5">
-                  <span>Iteration</span>
-                  <span className="rounded bg-white/60 px-1 py-px text-[10px] font-medium text-ink-500">
-                    {idx + 1}
-                  </span>
-                  <label
-                    className="relative ml-0.5 inline-flex h-4 w-4 cursor-pointer items-center justify-center rounded text-current opacity-50 transition hover:bg-white/50 hover:opacity-100"
-                    title={`Set start date (currently ${iter.startDate})`}
-                  >
-                    <svg width="11" height="11" viewBox="0 0 14 14" fill="none" aria-hidden>
-                      <rect x="2" y="3" width="10" height="9" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
-                      <path d="M2 6h10" stroke="currentColor" strokeWidth="1.3" />
-                      <path d="M5 2v2M9 2v2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-                    </svg>
-                    <input
-                      type="date"
-                      value={iter.startDate}
-                      onChange={e => {
-                        if (e.target.value) props.setIterationStart(iter.id, e.target.value);
+            {state.iterations.map((iter, idx) => {
+              const isCurrent = iter.id === currentIterationId;
+              return (
+                <th
+                  key={iter.id}
+                  data-iter-id={iter.id}
+                  colSpan={2}
+                  className={
+                    'sticky top-0 z-20 h-9 border-b-2 border-r-2 px-2 text-[11px] font-semibold uppercase tracking-[0.08em] ' +
+                    (isCurrent
+                      ? 'border-amber-500 border-r-amber-400/70 bg-amber-100 text-amber-800'
+                      : (idx % 2 === 0
+                          ? 'border-ink-200 border-r-ink-300 bg-brand-50 text-brand-700'
+                          : 'border-ink-200 border-r-ink-300 bg-indigo-50 text-indigo-700'))
+                  }
+                >
+                  <div className="flex items-center justify-center gap-1.5">
+                    <span>Iteration</span>
+                    <span
+                      className={
+                        'rounded px-1 py-px text-[10px] font-medium ' +
+                        (isCurrent ? 'bg-white/80 text-amber-700' : 'bg-white/60 text-ink-500')
+                      }
+                    >
+                      {idx + 1}
+                    </span>
+                    {isCurrent && (
+                      <span
+                        className="rounded-full bg-amber-500 px-1.5 py-px text-[9px] font-bold uppercase tracking-[0.08em] text-white"
+                        title="Today is in this iteration"
+                      >
+                        Now
+                      </span>
+                    )}
+                    <label
+                      className="relative ml-0.5 inline-flex h-4 w-4 cursor-pointer items-center justify-center rounded text-current opacity-50 transition hover:bg-white/50 hover:opacity-100"
+                      title={`Set start date (currently ${iter.startDate})`}
+                    >
+                      <svg width="11" height="11" viewBox="0 0 14 14" fill="none" aria-hidden>
+                        <rect x="2" y="3" width="10" height="9" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
+                        <path d="M2 6h10" stroke="currentColor" strokeWidth="1.3" />
+                        <path d="M5 2v2M9 2v2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+                      </svg>
+                      <input
+                        type="date"
+                        value={iter.startDate}
+                        onChange={e => {
+                          if (e.target.value) props.setIterationStart(iter.id, e.target.value);
+                        }}
+                        className="absolute inset-0 cursor-pointer opacity-0"
+                        aria-label="Iteration start date"
+                      />
+                    </label>
+                    <button
+                      onClick={() => {
+                        if (confirm('Remove this iteration (both weeks)?')) props.removeIteration(iter.id);
                       }}
-                      className="absolute inset-0 cursor-pointer opacity-0"
-                      aria-label="Iteration start date"
-                    />
-                  </label>
-                  <button
-                    onClick={() => {
-                      if (confirm('Remove this iteration (both weeks)?')) props.removeIteration(iter.id);
-                    }}
-                    title="Remove iteration"
-                    className="ml-0.5 inline-flex h-4 w-4 items-center justify-center rounded text-current opacity-50 hover:bg-white/50 hover:opacity-100"
-                  >
-                    ×
-                  </button>
-                </div>
-              </th>
-            ))}
+                      title="Remove iteration"
+                      className="ml-0.5 inline-flex h-4 w-4 items-center justify-center rounded text-current opacity-50 hover:bg-white/50 hover:opacity-100"
+                    >
+                      ×
+                    </button>
+                  </div>
+                </th>
+              );
+            })}
             {state.iterations.length === 0 && (
               <th
                 rowSpan={2}
@@ -584,17 +689,26 @@ function Chart(props: {
           </tr>
           {/* Week row */}
           <tr>
-            {allWeeks.map((w, i) => (
-              <th
-                key={w.id}
-                className={
-                  'sticky top-9 z-20 h-8 min-w-[132px] border-b border-r border-ink-200 bg-ink-50/70 px-2 text-center text-[11px] font-medium tabular-nums text-ink-600 ' +
-                  (i % 2 === 1 ? 'border-r-2 border-r-ink-300' : '')
-                }
-              >
-                {w.label}
-              </th>
-            ))}
+            {allWeeks.map((w, i) => {
+              const isCurrentWeek = w.iterationId === currentIterationId;
+              return (
+                <th
+                  key={w.id}
+                  className={
+                    'sticky top-9 z-20 h-8 min-w-[132px] border-b px-2 text-center text-[11px] font-medium tabular-nums ' +
+                    (isCurrentWeek
+                      ? 'border-amber-300 bg-amber-50 text-amber-800'
+                      : 'border-ink-200 bg-ink-50/70 text-ink-600') +
+                    ' border-r ' +
+                    (i % 2 === 1
+                      ? (isCurrentWeek ? 'border-r-2 border-r-amber-400/70' : 'border-r-2 border-r-ink-300')
+                      : (isCurrentWeek ? 'border-r-amber-200' : 'border-r-ink-200'))
+                  }
+                >
+                  {w.label}
+                </th>
+              );
+            })}
           </tr>
         </thead>
         <tbody>
@@ -631,6 +745,15 @@ function Chart(props: {
                 const isDri = cellAssigns.some(
                   a => lookupProject(projectsById, a.projectId)?.driId === person.id,
                 );
+                const isCurrentWeek = w.iterationId === currentIterationId;
+                const inExtendPreview =
+                  !!extending &&
+                  extending.personId === person.id &&
+                  i > extending.fromIdx &&
+                  i <= extending.toIdx;
+                const extendPreviewProject = inExtendPreview
+                  ? lookupProject(projectsById, extending!.projectId)
+                  : undefined;
                 return (
                   <Cell
                     key={w.id}
@@ -641,10 +764,13 @@ function Chart(props: {
                     projectsById={projectsById}
                     isDri={isDri}
                     isIterEnd={i % 2 === 1}
+                    isCurrentWeek={isCurrentWeek}
+                    extendPreviewProject={extendPreviewProject}
                     onAdd={pid => props.addAssignment(person.id, w.id, pid)}
                     onMove={aid => props.moveAssignment(aid, person.id, w.id)}
                     onRemove={props.removeAssignment}
                     onPick={rect => setPicker({ personId: person.id, weekId: w.id, rect })}
+                    onStartExtend={(projectId) => startExtend(person.id, projectId, w.id)}
                   />
                 );
               })}
@@ -698,11 +824,14 @@ function Cell(props: {
   projectsById: Record<ID, Project>;
   isDri: boolean;
   isIterEnd: boolean;
+  isCurrentWeek: boolean;
   rowAlt: boolean;
+  extendPreviewProject?: Project;
   onAdd: (projectId: ID) => void;
   onMove: (assignmentId: ID) => void;
   onRemove: (assignmentId: ID) => void;
   onPick: (rect: DOMRect) => void;
+  onStartExtend: (projectId: ID) => void;
 }) {
   const [hover, setHover] = useState(false);
   const cellRef = useRef<HTMLTableCellElement>(null);
@@ -728,6 +857,8 @@ function Cell(props: {
 
   const baseBg = props.isDri
     ? 'bg-amber-100/70 hover:bg-amber-100'
+    : props.isCurrentWeek
+    ? (props.rowAlt ? 'bg-amber-50/60 hover:bg-amber-50' : 'bg-amber-50/40 hover:bg-amber-50')
     : props.rowAlt
     ? 'bg-ink-50/40 hover:bg-brand-50/40'
     : 'bg-white hover:bg-brand-50/40';
@@ -735,11 +866,15 @@ function Cell(props: {
   return (
     <td
       ref={cellRef}
+      data-cell="1"
+      data-pid={props.personId}
+      data-wid={props.weekId}
       className={
         'group/cell relative h-[64px] min-w-[132px] cursor-pointer border-b border-r border-ink-200 p-1 align-middle transition-colors ' +
         baseBg +
         (props.isIterEnd ? ' border-r-2 border-r-ink-300' : '') +
-        (hover ? ' !bg-brand-50 ring-2 ring-inset ring-brand-400' : '')
+        (hover ? ' !bg-brand-50 ring-2 ring-inset ring-brand-400' : '') +
+        (props.extendPreviewProject ? ' ring-2 ring-inset ring-brand-400/70' : '')
       }
       onDragOver={onDragOver}
       onDragLeave={() => setHover(false)}
@@ -748,7 +883,7 @@ function Cell(props: {
       title="Click to add a project, or drag one in"
     >
       <div className="flex h-full flex-col items-center justify-center gap-1">
-        {props.assignments.length === 0 && (
+        {props.assignments.length === 0 && !props.extendPreviewProject && (
           <span
             className={
               'pointer-events-none select-none text-ink-300 transition ' +
@@ -758,6 +893,23 @@ function Cell(props: {
             }
           >
             {hover ? 'drop here' : '+'}
+          </span>
+        )}
+        {props.extendPreviewProject && (
+          <span
+            className={
+              'pointer-events-none select-none rounded-full border border-dashed border-brand-500/70 px-2.5 py-[3px] text-[11px] font-semibold leading-none opacity-80'
+            }
+            style={{
+              background: isPto(props.extendPreviewProject.id)
+                ? 'transparent'
+                : props.extendPreviewProject.color,
+              color: isPto(props.extendPreviewProject.id)
+                ? '#475569'
+                : inkFor(props.extendPreviewProject.color),
+            }}
+          >
+            {props.extendPreviewProject.name}
           </span>
         )}
         {props.assignments.map(a => {
@@ -778,6 +930,7 @@ function Cell(props: {
                 if (proj.url) window.open(proj.url, '_blank', 'noopener,noreferrer');
               }}
               onRemove={() => props.onRemove(a.id)}
+              onStartExtend={() => props.onStartExtend(a.projectId)}
             />
           );
         })}
@@ -793,11 +946,12 @@ function AssignChip(props: {
   onDragStart: (e: React.DragEvent) => void;
   onClick: (e: React.MouseEvent) => void;
   onRemove: () => void;
+  onStartExtend: () => void;
 }) {
   const { project, isOwnDri, isPto: pto } = props;
   const ink = pto ? '#475569' : inkFor(project.color);
   const baseClass =
-    'group/chip relative inline-flex max-w-full cursor-grab items-center gap-1 rounded-full px-2.5 py-[3px] text-[11px] font-semibold leading-none transition-transform active:cursor-grabbing hover:-translate-y-px';
+    'group/chip relative inline-flex max-w-full cursor-grab items-center gap-1 rounded-full px-2.5 py-[3px] pr-3 text-[11px] font-semibold leading-none transition-transform active:cursor-grabbing hover:-translate-y-px';
   return (
     <span
       draggable
@@ -843,6 +997,25 @@ function AssignChip(props: {
         className="ml-0.5 inline-flex h-3.5 w-3.5 items-center justify-center rounded-full text-[10px] font-bold opacity-0 transition group-hover/chip:opacity-60 hover:!opacity-100 hover:bg-black/15"
       >
         ×
+      </span>
+      {/* Right-edge handle: drag to extend this assignment across consecutive weeks */}
+      <span
+        onMouseDown={e => {
+          // Suppress native HTML5 drag (the chip itself is draggable for moves)
+          // and the cell-click that would open the picker, then start extend.
+          e.preventDefault();
+          e.stopPropagation();
+          props.onStartExtend();
+        }}
+        onClick={e => e.stopPropagation()}
+        onDragStart={e => e.preventDefault()}
+        title="Drag right to extend across more weeks"
+        className="absolute right-0 top-0 z-10 flex h-full w-2 cursor-col-resize items-center justify-center opacity-0 transition group-hover/chip:opacity-100"
+      >
+        <span
+          className="block h-3 w-[2px] rounded-full bg-current opacity-60"
+          aria-hidden
+        />
       </span>
     </span>
   );
