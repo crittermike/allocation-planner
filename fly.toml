@@ -1,0 +1,37 @@
+# fly.toml — Allocation Planner
+# Run `fly launch --no-deploy --copy-config` once, then `fly deploy`.
+# Customize `app` and `primary_region` to your account.
+
+app = "allocation-planner"
+primary_region = "ord"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  DATA_DIR = "/data"
+  PORT = "8787"
+
+# Persistent volume for SQLite. Create once with:
+#   fly volumes create data --region ord --size 1
+[[mounts]]
+  source = "data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8787
+  force_https = true
+  auto_stop_machines = "suspend"
+  auto_start_machines = true
+  # Keep one machine warm so the WebSocket sync feels live.
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 200
+    hard_limit = 250
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
