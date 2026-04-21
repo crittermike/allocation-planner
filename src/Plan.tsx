@@ -203,9 +203,15 @@ function PlanView({
     setState(s => {
       const d = parseISODate(isoDate);
       if (isNaN(d.getTime())) return s;
-      const monday = toISODate(mondayOf(d));
-      const next = s.iterations.map(i => (i.id === id ? { ...i, startDate: monday } : i));
-      next.sort((a, b) => a.startDate.localeCompare(b.startDate));
+      const anchor = mondayOf(d);
+      const anchorIdx = s.iterations.findIndex(i => i.id === id);
+      if (anchorIdx === -1) return s;
+      // Re-derive every iteration's start date relative to the anchor,
+      // keeping the fixed 2-week cadence between them.
+      const next = s.iterations.map((iter, idx) => ({
+        ...iter,
+        startDate: toISODate(addDays(anchor, (idx - anchorIdx) * 14)),
+      }));
       return { ...s, iterations: next };
     });
   const removeIteration = (iterationId: ID) =>
