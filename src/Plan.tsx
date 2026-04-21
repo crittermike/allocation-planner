@@ -855,9 +855,7 @@ function Cell(props: {
     if (pid) props.onAdd(pid);
   };
 
-  const baseBg = props.isDri
-    ? 'bg-amber-100/70 hover:bg-amber-100'
-    : props.isCurrentWeek
+  const baseBg = props.isCurrentWeek
     ? (props.rowAlt ? 'bg-amber-50/60 hover:bg-amber-50' : 'bg-amber-50/40 hover:bg-amber-50')
     : props.rowAlt
     ? 'bg-ink-50/40 hover:bg-brand-50/40'
