@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PlanState } from './types';
+import { recordVisit } from './visited';
 
 export type ConnState = 'connecting' | 'open' | 'closed' | 'missing';
 
@@ -116,6 +117,7 @@ export function usePlan(slug: string | null): UsePlan {
         const data = await r.json();
         if (stopped) return;
         setLocalState(data.state);
+        recordVisit(slug);
         open();
       })
       .catch(() => {

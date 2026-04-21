@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { navigate } from './router';
 import type { PlanSummary } from './types';
+import { forgetVisit, getVisited } from './visited';
 
 const slugifyClient = (s: string) =>
   s
@@ -28,6 +29,7 @@ export function Home() {
   const [plans, setPlans] = useState<PlanSummary[] | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [visited, setVisited] = useState(() => getVisited());
 
   useEffect(() => {
     let alive = true;
@@ -37,6 +39,26 @@ export function Home() {
       .catch(() => { if (alive) setPlans([]); });
     return () => { alive = false; };
   }, []);
+
+  const myPlans = useMemo(() => {
+    if (!plans) return null;
+    const visitedAtBySlug = new Map(visited.map(v => [v.slug, v.visitedAt]));
+    return plans
+      .filter(p => visitedAtBySlug.has(p.slug))
+      .sort((a, b) => (visitedAtBySlug.get(b.slug) ?? 0) - (visitedAtBySlug.get(a.slug) ?? 0));
+  }, [plans, visited]);
+
+  const missingVisited = useMemo(() => {
+    if (!plans) return [] as string[];
+    const known = new Set(plans.map(p => p.slug));
+    return visited.map(v => v.slug).filter(s => !known.has(s));
+  }, [plans, visited]);
+
+  useEffect(() => {
+    if (missingVisited.length === 0) return;
+    missingVisited.forEach(forgetVisit);
+    setVisited(getVisited());
+  }, [missingVisited]);
 
   const slugPreview = slugifyClient(name);
 
@@ -112,14 +134,14 @@ export function Home() {
             {plans === null && (
               <div className="px-5 py-6 text-center text-[13px] text-ink-500">Loading…</div>
             )}
-            {plans && plans.length === 0 && (
+            {myPlans && myPlans.length === 0 && (
               <div className="px-5 py-8 text-center text-[13px] text-ink-500">
-                No plans yet. Create your first one above.
+                No recent plans. Plans you open will show up here.
               </div>
             )}
-            {plans && plans.length > 0 && (
+            {myPlans && myPlans.length > 0 && (
               <ul className="divide-y divide-ink-100">
-                {plans.map(p => (
+                {myPlans.map(p => (
                   <li key={p.slug}>
                     <a
                       href={'/' + p.slug}
