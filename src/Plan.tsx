@@ -598,7 +598,7 @@ function Chart(props: {
   return (
     <div
       className={
-        'inline-block min-w-full overflow-hidden rounded-2xl border border-ink-200 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04),0_8px_24px_-12px_rgba(15,23,42,0.08)]' +
+        'inline-block min-w-full rounded-2xl border border-ink-200 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04),0_8px_24px_-12px_rgba(15,23,42,0.08)]' +
         (extending ? ' select-none' : '')
       }
     >
@@ -717,7 +717,7 @@ function Chart(props: {
               <td
                 className={
                   'sticky left-0 z-10 w-[200px] min-w-[200px] border-b border-r-2 border-ink-200 border-r-ink-300 px-3 py-2 align-middle ' +
-                  (rowIdx % 2 === 0 ? 'bg-white' : 'bg-ink-50/40')
+                  (rowIdx % 2 === 0 ? 'bg-white' : 'bg-ink-50')
                 }
               >
                 <div className="flex items-center gap-1">
