@@ -185,7 +185,28 @@ function PlanView({
         s.iterations.length === 0
           ? mondayOf(new Date())
           : addDays(parseISODate(s.iterations[s.iterations.length - 1].startDate), 14);
-      return { ...s, iterations: [...s.iterations, { id: uid(), startDate: toISODate(nextStart) }] };
+      const next = [...s.iterations, { id: uid(), startDate: toISODate(nextStart) }];
+      next.sort((a, b) => a.startDate.localeCompare(b.startDate));
+      return { ...s, iterations: next };
+    });
+  const addPastIteration = () =>
+    setState(s => {
+      const prevStart =
+        s.iterations.length === 0
+          ? mondayOf(new Date())
+          : addDays(parseISODate(s.iterations[0].startDate), -14);
+      const next = [{ id: uid(), startDate: toISODate(prevStart) }, ...s.iterations];
+      next.sort((a, b) => a.startDate.localeCompare(b.startDate));
+      return { ...s, iterations: next };
+    });
+  const setIterationStart = (id: ID, isoDate: string) =>
+    setState(s => {
+      const d = parseISODate(isoDate);
+      if (isNaN(d.getTime())) return s;
+      const monday = toISODate(mondayOf(d));
+      const next = s.iterations.map(i => (i.id === id ? { ...i, startDate: monday } : i));
+      next.sort((a, b) => a.startDate.localeCompare(b.startDate));
+      return { ...s, iterations: next };
     });
   const removeIteration = (iterationId: ID) =>
     setState(s => {
@@ -268,6 +289,9 @@ function PlanView({
           onChange={e => setTitle(e.target.value)}
         />
         <Presence conn={conn} peers={peers} />
+        <ToolbarButton subtle onClick={addPastIteration} title="Add an iteration before the first one">
+          ← Past iteration
+        </ToolbarButton>
         <ToolbarButton onClick={addIteration}>+ Iteration</ToolbarButton>
         <ToolbarButton onClick={() => addPerson()}>+ Person</ToolbarButton>
         <ToolbarButton subtle onClick={clearAssignments}>Clear chart</ToolbarButton>
@@ -284,6 +308,7 @@ function PlanView({
             removePerson={removePerson}
             addPerson={addPerson}
             removeIteration={removeIteration}
+            setIterationStart={setIterationStart}
             addAssignment={addAssignment}
             moveAssignment={moveAssignment}
             removeAssignment={removeAssignment}
@@ -405,6 +430,7 @@ function ToolbarButton(props: {
   children: React.ReactNode;
   onClick?: () => void;
   subtle?: boolean;
+  title?: string;
 }) {
   const base =
     'inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[12px] font-medium transition active:scale-[0.98]';
@@ -412,7 +438,7 @@ function ToolbarButton(props: {
     ? 'text-ink-500 hover:bg-ink-100 hover:text-ink-900'
     : 'border border-ink-200 bg-white text-ink-800 shadow-sm hover:border-ink-300 hover:bg-ink-50';
   return (
-    <button className={base + ' ' + styled} onClick={props.onClick}>
+    <button className={base + ' ' + styled} onClick={props.onClick} title={props.title}>
       {props.children}
     </button>
   );
@@ -454,6 +480,7 @@ function Chart(props: {
   removePerson: (id: ID) => void;
   addPerson: (name?: string) => void;
   removeIteration: (id: ID) => void;
+  setIterationStart: (id: ID, isoDate: string) => void;
   addAssignment: (personId: ID, weekId: string, projectId: ID) => void;
   moveAssignment: (assignmentId: ID, personId: ID, weekId: string) => void;
   removeAssignment: (id: ID) => void;
@@ -487,6 +514,25 @@ function Chart(props: {
                   <span className="rounded bg-white/60 px-1 py-px text-[10px] font-medium text-ink-500">
                     {idx + 1}
                   </span>
+                  <label
+                    className="relative ml-0.5 inline-flex h-4 w-4 cursor-pointer items-center justify-center rounded text-current opacity-50 transition hover:bg-white/50 hover:opacity-100"
+                    title={`Set start date (currently ${iter.startDate})`}
+                  >
+                    <svg width="11" height="11" viewBox="0 0 14 14" fill="none" aria-hidden>
+                      <rect x="2" y="3" width="10" height="9" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
+                      <path d="M2 6h10" stroke="currentColor" strokeWidth="1.3" />
+                      <path d="M5 2v2M9 2v2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+                    </svg>
+                    <input
+                      type="date"
+                      value={iter.startDate}
+                      onChange={e => {
+                        if (e.target.value) props.setIterationStart(iter.id, e.target.value);
+                      }}
+                      className="absolute inset-0 cursor-pointer opacity-0"
+                      aria-label="Iteration start date"
+                    />
+                  </label>
                   <button
                     onClick={() => {
                       if (confirm('Remove this iteration (both weeks)?')) props.removeIteration(iter.id);
