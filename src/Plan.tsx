@@ -619,9 +619,19 @@ function Chart(props: {
           <tr>
             <th
               rowSpan={2}
-              className="sticky left-0 top-0 z-30 w-[200px] min-w-[200px] border-b border-r-2 border-ink-200 border-r-ink-300 bg-ink-50 px-5 py-3 text-left align-bottom text-[10.5px] font-semibold uppercase tracking-[0.08em] text-ink-500"
+              className="sticky left-0 top-0 z-30 w-[200px] min-w-[200px] border-b border-r-2 border-ink-200 border-r-ink-300 bg-ink-50 pl-5 pr-2 py-3 text-left align-bottom text-[10.5px] font-semibold uppercase tracking-[0.08em] text-ink-500"
             >
-              Person
+              <div className="flex items-center justify-between gap-2">
+                <span>Person</span>
+                <button
+                  type="button"
+                  onClick={() => props.addPerson()}
+                  title="Add person"
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-ink-200 bg-white text-[14px] font-semibold leading-none text-ink-600 shadow-sm transition hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700"
+                >
+                  +
+                </button>
+              </div>
             </th>
             {state.iterations.map((iter, idx) => {
               const isCurrent = iter.id === currentIterationId;
@@ -815,19 +825,6 @@ function Chart(props: {
                 </td>
               );
             })}
-          </tr>
-          <tr>
-            <td
-              colSpan={1 + allWeeks.length}
-              className="border-t border-ink-200 bg-ink-50/40 px-3 py-2"
-            >
-              <button
-                className="inline-flex h-7 items-center gap-1 rounded-md px-2.5 text-[12px] font-medium text-ink-500 transition hover:bg-white hover:text-ink-900 hover:shadow-sm"
-                onClick={() => props.addPerson()}
-              >
-                <span className="text-[14px] leading-none">+</span> Add person
-              </button>
-            </td>
           </tr>
           {state.people.length === 0 && (
             <tr>
