@@ -1098,6 +1098,16 @@ function ProjectsTable(props: {
     return arr;
   }, [props.projects, props.plannedByProject, sortKey, sortDir]);
 
+  const totals = useMemo(() => {
+    let planned = 0;
+    let estimated = 0;
+    for (const p of props.projects) {
+      planned += props.plannedByProject[p.id] ?? 0;
+      if (typeof p.estimatedWeeks === 'number') estimated += p.estimatedWeeks;
+    }
+    return { planned, estimated };
+  }, [props.projects, props.plannedByProject]);
+
   const toggleSort = (key: SortKey) => {
     if (sortKey === key) {
       setSortDir(d => (d === 'asc' ? 'desc' : 'asc'));
@@ -1133,14 +1143,20 @@ function ProjectsTable(props: {
             onClick={() => toggleSort('estimated')}
             aria-sort={sortKey === 'estimated' ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
           >
-            Est.{arrow('estimated')}
+            Est.{totals.estimated > 0 && (
+              <span className="ml-1 normal-case tracking-normal text-ink-400">· {totals.estimated} wk</span>
+            )}{arrow('estimated')}
           </th>
           <th
-            className={`${sortableThClass} w-[120px]`}
+            className={`${sortableThClass} w-[170px]`}
             onClick={() => toggleSort('planned')}
             aria-sort={sortKey === 'planned' ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
           >
-            Planned{arrow('planned')}
+            Planned
+            <span className="ml-1 normal-case tracking-normal text-ink-400">
+              · {totals.planned}{totals.estimated > 0 ? ` / ${totals.estimated}` : ''} wk
+            </span>
+            {arrow('planned')}
           </th>
           <th className="sticky top-0 z-10 border-b border-ink-200 bg-ink-50/80 py-2.5 px-3 text-left backdrop-blur">URL</th>
           <th className="sticky top-0 z-10 w-[56px] border-b border-ink-200 bg-ink-50/80 py-2.5 pl-3 pr-4 text-right backdrop-blur"></th>
