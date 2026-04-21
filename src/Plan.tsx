@@ -49,6 +49,25 @@ function inkFor(bg: string): string {
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
+/* ---------- PTO sentinel ----------
+ * PTO is an assignment kind that isn't a project. We model it by reserving a
+ * fixed "project id" so it flows through the same Assignment record without
+ * touching state.projects (so it never shows up in the projects table or
+ * planned-eng-weeks counts).
+ */
+const PTO_ID: ID = '__pto__';
+const PTO_PROJECT: Project = {
+  id: PTO_ID,
+  name: 'PTO',
+  color: '#e2e8f0',
+  driId: null,
+};
+const isPto = (id: ID) => id === PTO_ID;
+const lookupProject = (
+  projectsById: Record<ID, Project>,
+  id: ID,
+): Project | undefined => (isPto(id) ? PTO_PROJECT : projectsById[id]);
+
 /* ---------- date helpers ---------- */
 const MS_PER_DAY = 86400000;
 const parseISODate = (s: string) => {
@@ -144,7 +163,10 @@ function PlanView({
   );
   const plannedByProject = useMemo(() => {
     const map: Record<ID, number> = {};
-    for (const a of state.assignments) map[a.projectId] = (map[a.projectId] ?? 0) + 1;
+    for (const a of state.assignments) {
+      if (isPto(a.projectId)) continue;
+      map[a.projectId] = (map[a.projectId] ?? 0) + 1;
+    }
     return map;
   }, [state.assignments]);
 
@@ -607,7 +629,7 @@ function Chart(props: {
                   a => a.personId === person.id && a.weekId === w.id,
                 );
                 const isDri = cellAssigns.some(
-                  a => projectsById[a.projectId]?.driId === person.id,
+                  a => lookupProject(projectsById, a.projectId)?.driId === person.id,
                 );
                 return (
                   <Cell
@@ -739,12 +761,13 @@ function Cell(props: {
           </span>
         )}
         {props.assignments.map(a => {
-          const proj = props.projectsById[a.projectId];
+          const proj = lookupProject(props.projectsById, a.projectId);
           if (!proj) return null;
           return (
             <AssignChip
               key={a.id}
               project={proj}
+              isPto={isPto(a.projectId)}
               isOwnDri={proj.driId === props.personId}
               onDragStart={e => {
                 e.dataTransfer.setData('application/x-assignment', a.id);
@@ -765,36 +788,51 @@ function Cell(props: {
 
 function AssignChip(props: {
   project: Project;
+  isPto?: boolean;
   isOwnDri: boolean;
   onDragStart: (e: React.DragEvent) => void;
   onClick: (e: React.MouseEvent) => void;
   onRemove: () => void;
 }) {
-  const { project, isOwnDri } = props;
-  const ink = inkFor(project.color);
+  const { project, isOwnDri, isPto: pto } = props;
+  const ink = pto ? '#475569' : inkFor(project.color);
+  const baseClass =
+    'group/chip relative inline-flex max-w-full cursor-grab items-center gap-1 rounded-full px-2.5 py-[3px] text-[11px] font-semibold leading-none transition-transform active:cursor-grabbing hover:-translate-y-px';
   return (
     <span
       draggable
       onDragStart={props.onDragStart}
       onClick={props.onClick}
       title={
-        project.name +
-        (isOwnDri ? ' · DRI' : '') +
-        (project.url ? `\nClick to open ${project.url}` : '')
+        pto
+          ? 'PTO'
+          : project.name +
+            (isOwnDri ? ' · DRI' : '') +
+            (project.url ? `\nClick to open ${project.url}` : '')
       }
       className={
-        'group/chip relative inline-flex max-w-full cursor-grab items-center gap-1 rounded-full border px-2.5 py-[3px] text-[11px] font-semibold leading-none shadow-[inset_0_1px_0_rgba(255,255,255,0.5),0_1px_1px_rgba(15,23,42,0.05)] transition-transform active:cursor-grabbing hover:-translate-y-px ' +
-        (project.url ? 'cursor-pointer ' : '')
+        baseClass +
+        ' ' +
+        (pto
+          ? 'border border-dashed border-ink-400/60 bg-[repeating-linear-gradient(135deg,#f1f5f9_0_6px,#e2e8f0_6px_12px)] uppercase tracking-[0.06em]'
+          : 'border border-black/[0.06] shadow-[inset_0_1px_0_rgba(255,255,255,0.5),0_1px_1px_rgba(15,23,42,0.05)]') +
+        (project.url && !pto ? ' cursor-pointer' : '')
       }
-      style={{ background: project.color, color: ink, borderColor: 'rgba(15,23,42,0.06)' }}
+      style={pto ? { color: ink } : { background: project.color, color: ink }}
     >
-      {isOwnDri && (
-        <span
-          className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-white/70 text-[8px] font-bold"
-          title="DRI"
-        >
-          ★
+      {pto ? (
+        <span className="inline-flex h-3.5 w-3.5 items-center justify-center text-[10px]" aria-hidden>
+          ☀
         </span>
+      ) : (
+        isOwnDri && (
+          <span
+            className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-white/70 text-[8px] font-bold"
+            title="DRI"
+          >
+            ★
+          </span>
+        )
       )}
       <span className="max-w-[110px] truncate">{project.name}</span>
       <span
@@ -1101,8 +1139,28 @@ function ProjectPicker(props: {
         />
       </div>
       <div className="flex-1 overflow-y-auto p-1.5">
-        {filtered.length === 0 && (
+        <button
+          className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[13px] text-ink-700 transition hover:bg-ink-100"
+          onClick={() => props.onPick(PTO_ID)}
+          title="Mark this week as PTO (not a project)"
+        >
+          <span
+            className="inline-block h-3.5 w-3.5 rounded-full border border-ink-300/70 bg-[repeating-linear-gradient(135deg,#f1f5f9_0_3px,#e2e8f0_3px_6px)]"
+            aria-hidden
+          />
+          <span className="font-semibold uppercase tracking-[0.06em] text-ink-600">PTO</span>
+          <span className="ml-auto text-[11px] text-ink-400">time off</span>
+        </button>
+        {props.projects.length > 0 && (
+          <div className="my-1.5 border-t border-ink-100" />
+        )}
+        {filtered.length === 0 && props.projects.length > 0 && (
           <div className="px-3 py-6 text-center text-[12px] text-ink-500">No projects match.</div>
+        )}
+        {props.projects.length === 0 && (
+          <div className="px-3 py-4 text-center text-[12px] text-ink-500">
+            No projects yet — add one in the Projects panel below.
+          </div>
         )}
         {filtered.map(p => (
           <button
