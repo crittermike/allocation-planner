@@ -360,7 +360,7 @@ function PlanView({
 
       <div className="flex min-h-0 flex-1 flex-col">
         {/* Chart pane */}
-        <div ref={chartScrollRef} className="min-h-0 flex-1 overflow-auto p-4 pb-6">
+        <div ref={chartScrollRef} className="min-h-0 flex-1 overflow-auto m-4 mb-6">
           <Chart
             state={state}
             allWeeks={allWeeks}
