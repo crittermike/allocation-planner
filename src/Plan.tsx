@@ -22,6 +22,7 @@ type State = {
   projects: Project[];
   iterations: Iteration[];
   assignments: Assignment[];
+  weekNotes?: Record<string, string>;
 };
 
 const PANEL_KEY = 'gantt-maker-panel-v1';
@@ -279,6 +280,14 @@ function PlanView({
   const clearAssignments = () => {
     if (confirm('Clear all assignments?')) setState(s => ({ ...s, assignments: [] }));
   };
+  const setWeekNote = (weekId: string, text: string) =>
+    setState(s => {
+      const next = { ...(s.weekNotes ?? {}) };
+      const trimmed = text.trim();
+      if (trimmed === '') delete next[weekId];
+      else next[weekId] = text;
+      return { ...s, weekNotes: next };
+    });
 
   /* Auto-scroll the chart so the current iteration is the first one visible.
    * Runs when the current iteration changes (e.g. after the plan loads from
@@ -374,6 +383,7 @@ function PlanView({
             addAssignment={addAssignment}
             moveAssignment={moveAssignment}
             removeAssignment={removeAssignment}
+            setWeekNote={setWeekNote}
           />
         </div>
 
@@ -547,6 +557,7 @@ function Chart(props: {
   addAssignment: (personId: ID, weekId: string, projectId: ID) => void;
   moveAssignment: (assignmentId: ID, personId: ID, weekId: string) => void;
   removeAssignment: (id: ID) => void;
+  setWeekNote: (weekId: string, text: string) => void;
 }) {
   const { state, allWeeks, projectsById, currentIterationId } = props;
   const [picker, setPicker] = useState<{ personId: ID; weekId: string; rect: DOMRect } | null>(null);
@@ -776,6 +787,35 @@ function Chart(props: {
               })}
             </tr>
           ))}
+          <tr className="group/notesrow">
+            <td
+              className="sticky left-0 z-10 w-[200px] min-w-[200px] border-t-2 border-b border-r-2 border-ink-200 border-r-ink-300 bg-ink-50 px-5 py-2 align-middle text-[10.5px] font-semibold uppercase tracking-[0.08em] text-ink-500"
+            >
+              Notes
+            </td>
+            {allWeeks.map((w, i) => {
+              const isCurrentWeek = w.iterationId === currentIterationId;
+              const note = state.weekNotes?.[w.id] ?? '';
+              return (
+                <td
+                  key={w.id}
+                  className={
+                    'h-[44px] min-w-[132px] border-t-2 border-b border-r border-ink-200 p-1 align-middle ' +
+                    (isCurrentWeek ? 'bg-amber-50/40' : 'bg-white') +
+                    (i % 2 === 1 ? ' border-r-2 border-r-ink-300' : '')
+                  }
+                >
+                  <input
+                    value={note}
+                    onChange={e => props.setWeekNote(w.id, e.target.value)}
+                    placeholder="Add note…"
+                    title={note || 'Add a note for this week'}
+                    className="block w-full rounded border border-transparent bg-transparent px-2 py-1 text-[12px] text-ink-700 outline-none transition placeholder:text-ink-300 hover:bg-white hover:shadow-sm focus:border-ink-300 focus:bg-white focus:ring-2 focus:ring-brand-200"
+                  />
+                </td>
+              );
+            })}
+          </tr>
           <tr>
             <td
               colSpan={1 + allWeeks.length}

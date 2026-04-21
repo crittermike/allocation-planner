@@ -18,6 +18,7 @@ export type PlanState = {
   projects: Project[];
   iterations: Iteration[];
   assignments: Assignment[];
+  weekNotes?: Record<string, string>;
 };
 
 export type PlanSummary = {
