@@ -598,7 +598,7 @@ function Chart(props: {
   return (
     <div
       className={
-        'inline-block min-w-full rounded-2xl border border-ink-200 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04),0_8px_24px_-12px_rgba(15,23,42,0.08)]' +
+        'inline-block min-w-full overflow-clip rounded-2xl border border-ink-200 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04),0_8px_24px_-12px_rgba(15,23,42,0.08)]' +
         (extending ? ' select-none' : '')
       }
     >
