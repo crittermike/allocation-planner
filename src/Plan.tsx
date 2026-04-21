@@ -26,6 +26,7 @@ type State = {
 };
 
 const PANEL_KEY = 'gantt-maker-panel-v1';
+const TRANSPOSED_KEY = 'gantt-maker-transposed-v1';
 
 /** Soft, characterful palette — paired bg + ink colors for legible chips. */
 const PALETTE = [
@@ -295,6 +296,21 @@ function PlanView({
    * accessible by scrolling left. */
   const chartScrollRef = useRef<HTMLDivElement | null>(null);
   const lastScrolledIterRef = useRef<ID | null>(null);
+
+  /* projects panel state */
+  const [transposed, setTransposed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(TRANSPOSED_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(TRANSPOSED_KEY, transposed ? '1' : '0'); } catch {}
+    // re-trigger auto-scroll on layout swap
+    lastScrolledIterRef.current = null;
+  }, [transposed]);
+
   useEffect(() => {
     if (!currentIterationId) return;
     if (lastScrolledIterRef.current === currentIterationId) return;
@@ -304,15 +320,18 @@ function PlanView({
       `[data-iter-id="${currentIterationId}"]`,
     );
     if (!target) return;
-    // The Person column is sticky on the left, so we want the iteration
-    // header to land just to the right of it (≈ 200px wide column + a bit).
-    const stickyOffset = 200;
-    const left = target.offsetLeft - stickyOffset - 8;
-    scroller.scrollTo({ left: Math.max(0, left), behavior: 'smooth' });
+    if (transposed) {
+      const stickyOffset = 36;
+      const top = target.offsetTop - stickyOffset - 8;
+      scroller.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+    } else {
+      const stickyOffset = 200;
+      const left = target.offsetLeft - stickyOffset - 8;
+      scroller.scrollTo({ left: Math.max(0, left), behavior: 'smooth' });
+    }
     lastScrolledIterRef.current = currentIterationId;
-  }, [currentIterationId]);
+  }, [currentIterationId, transposed]);
 
-  /* projects panel state */
   const [panel, setPanel] = useState<{ collapsed: boolean; height: number }>(() => {
     try {
       const raw = localStorage.getItem(PANEL_KEY);
@@ -327,6 +346,22 @@ function PlanView({
   const onResizeStart = (e: React.MouseEvent) => {
     if (panel.collapsed) return;
     e.preventDefault();
+    if (transposed) {
+      const startX = e.clientX;
+      const startW = panel.height; // reuse field as width when transposed
+      const onMove = (ev: MouseEvent) => {
+        const dx = startX - ev.clientX;
+        const next = Math.max(280, Math.min(window.innerWidth - 280, startW + dx));
+        setPanel(p => ({ ...p, height: next }));
+      };
+      const onUp = () => {
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+      };
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+      return;
+    }
     const startY = e.clientY;
     const startH = panel.height;
     const onMove = (ev: MouseEvent) => {
@@ -364,46 +399,83 @@ function PlanView({
         </ToolbarButton>
         <ToolbarButton onClick={addIteration}>+ Iteration</ToolbarButton>
         <ToolbarButton onClick={() => addPerson()}>+ Person</ToolbarButton>
+        <ToolbarButton
+          subtle
+          onClick={() => setTransposed(t => !t)}
+          title={transposed ? 'Switch back to people-as-rows view' : 'Swap rows and columns (weeks as rows)'}
+        >
+          {transposed ? '⇆ People as rows' : '⇆ Weeks as rows'}
+        </ToolbarButton>
         <ToolbarButton subtle onClick={clearAssignments}>Clear chart</ToolbarButton>
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col">
+      <div className={'flex min-h-0 flex-1 ' + (transposed ? 'flex-row' : 'flex-col')}>
         {/* Chart pane */}
-        <div ref={chartScrollRef} className="min-h-0 flex-1 overflow-auto m-4 mb-6">
-          <Chart
-            state={state}
-            allWeeks={allWeeks}
-            projectsById={projectsById}
-            currentIterationId={currentIterationId}
-            renamePerson={renamePerson}
-            removePerson={removePerson}
-            addPerson={addPerson}
-            removeIteration={removeIteration}
-            setIterationStart={setIterationStart}
-            addAssignment={addAssignment}
-            moveAssignment={moveAssignment}
-            removeAssignment={removeAssignment}
-            setWeekNote={setWeekNote}
-          />
+        <div ref={chartScrollRef} className={'min-h-0 min-w-0 flex-1 overflow-auto ' + (transposed ? 'm-4 mr-2' : 'm-4 mb-6')}>
+          {transposed ? (
+            <ChartTransposed
+              state={state}
+              allWeeks={allWeeks}
+              projectsById={projectsById}
+              currentIterationId={currentIterationId}
+              renamePerson={renamePerson}
+              removePerson={removePerson}
+              addPerson={addPerson}
+              removeIteration={removeIteration}
+              setIterationStart={setIterationStart}
+              addAssignment={addAssignment}
+              moveAssignment={moveAssignment}
+              removeAssignment={removeAssignment}
+              setWeekNote={setWeekNote}
+            />
+          ) : (
+            <Chart
+              state={state}
+              allWeeks={allWeeks}
+              projectsById={projectsById}
+              currentIterationId={currentIterationId}
+              renamePerson={renamePerson}
+              removePerson={removePerson}
+              addPerson={addPerson}
+              removeIteration={removeIteration}
+              setIterationStart={setIterationStart}
+              addAssignment={addAssignment}
+              moveAssignment={moveAssignment}
+              removeAssignment={removeAssignment}
+              setWeekNote={setWeekNote}
+            />
+          )}
         </div>
 
         {/* Resize grabber (only when expanded) */}
         {!panel.collapsed && (
           <div
-            className="group relative h-2 cursor-row-resize border-y border-ink-200 bg-ink-50/60"
+            className={
+              transposed
+                ? 'group relative w-2 cursor-col-resize border-x border-ink-200 bg-ink-50/60'
+                : 'group relative h-2 cursor-row-resize border-y border-ink-200 bg-ink-50/60'
+            }
             onMouseDown={onResizeStart}
             title="Drag to resize"
           >
-            <div className="pointer-events-none absolute left-1/2 top-1/2 h-[3px] w-9 -translate-x-1/2 -translate-y-1/2 rounded-full bg-ink-300 opacity-60 transition group-hover:bg-ink-400 group-hover:opacity-100" />
+            <div
+              className={
+                transposed
+                  ? 'pointer-events-none absolute left-1/2 top-1/2 h-9 w-[3px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-ink-300 opacity-60 transition group-hover:bg-ink-400 group-hover:opacity-100'
+                  : 'pointer-events-none absolute left-1/2 top-1/2 h-[3px] w-9 -translate-x-1/2 -translate-y-1/2 rounded-full bg-ink-300 opacity-60 transition group-hover:bg-ink-400 group-hover:opacity-100'
+              }
+            />
           </div>
         )}
 
         {/* Projects panel */}
         <div
           className={
-            'flex flex-col overflow-hidden border-t border-ink-200 bg-white shadow-[0_-2px_24px_rgba(15,23,42,0.04)] transition-[height] duration-200 ease-out'
+            transposed
+              ? 'flex flex-col overflow-hidden border-l border-ink-200 bg-white shadow-[-2px_0_24px_rgba(15,23,42,0.04)] transition-[width] duration-200 ease-out'
+              : 'flex flex-col overflow-hidden border-t border-ink-200 bg-white shadow-[0_-2px_24px_rgba(15,23,42,0.04)] transition-[height] duration-200 ease-out'
           }
-          style={{ height: panel.collapsed ? 48 : panel.height }}
+          style={transposed ? { width: panel.collapsed ? 48 : panel.height } : { height: panel.collapsed ? 48 : panel.height }}
         >
           <div className="flex shrink-0 items-center gap-3 border-b border-ink-200 bg-gradient-to-b from-ink-50/60 to-white px-5 py-2.5">
             <button
@@ -836,6 +908,292 @@ function Chart(props: {
               </td>
             </tr>
           )}
+        </tbody>
+      </table>
+
+      {picker && (
+        <ProjectPicker
+          rect={picker.rect}
+          projects={state.projects}
+          onPick={pid => {
+            props.addAssignment(picker.personId, picker.weekId, pid);
+            setPicker(null);
+          }}
+          onClose={() => setPicker(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ============================================================ */
+/* ChartTransposed — weeks as rows, people as columns           */
+/* ============================================================ */
+
+function ChartTransposed(props: {
+  state: State;
+  allWeeks: WeekInfo[];
+  projectsById: Record<ID, Project>;
+  currentIterationId: ID | null;
+  renamePerson: (id: ID, name: string) => void;
+  removePerson: (id: ID) => void;
+  addPerson: (name?: string) => void;
+  removeIteration: (id: ID) => void;
+  setIterationStart: (id: ID, isoDate: string) => void;
+  addAssignment: (personId: ID, weekId: string, projectId: ID) => void;
+  moveAssignment: (assignmentId: ID, personId: ID, weekId: string) => void;
+  removeAssignment: (id: ID) => void;
+  setWeekNote: (weekId: string, text: string) => void;
+}) {
+  const { state, allWeeks, projectsById, currentIterationId } = props;
+  const [picker, setPicker] = useState<{ personId: ID; weekId: string; rect: DOMRect } | null>(null);
+  const [extending, setExtending] = useState<null | {
+    personId: ID;
+    projectId: ID;
+    fromIdx: number;
+    toIdx: number;
+  }>(null);
+
+  const startExtend = (personId: ID, projectId: ID, weekId: string) => {
+    const fromIdx = allWeeks.findIndex(w => w.id === weekId);
+    if (fromIdx === -1) return;
+    setExtending({ personId, projectId, fromIdx, toIdx: fromIdx });
+    const onMove = (e: MouseEvent) => {
+      const el = (document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null)?.closest(
+        '[data-cell="1"]',
+      ) as HTMLElement | null;
+      if (!el) return;
+      if (el.dataset.pid !== personId) return;
+      const idx = allWeeks.findIndex(w => w.id === el.dataset.wid);
+      if (idx < fromIdx) return;
+      setExtending(prev => (prev && prev.toIdx !== idx ? { ...prev, toIdx: idx } : prev));
+    };
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      setExtending(curr => {
+        if (curr) {
+          for (let i = curr.fromIdx + 1; i <= curr.toIdx; i++) {
+            const w = allWeeks[i];
+            if (w) props.addAssignment(curr.personId, w.id, curr.projectId);
+          }
+        }
+        return null;
+      });
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
+
+  // Sticky column widths
+  const ITER_W = 96;
+  const WEEK_W = 96;
+
+  return (
+    <div
+      className={
+        'inline-block min-w-full overflow-clip rounded-2xl border border-ink-200 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04),0_8px_24px_-12px_rgba(15,23,42,0.08)]' +
+        (extending ? ' select-none' : '')
+      }
+    >
+      <table className="w-full border-separate border-spacing-0">
+        <thead>
+          <tr>
+            {/* corner: iteration col */}
+            <th
+              style={{ left: 0, width: ITER_W, minWidth: ITER_W }}
+              className="sticky top-0 z-30 h-9 border-b border-r border-ink-200 bg-ink-50 px-2 py-2 text-left align-middle text-[10.5px] font-semibold uppercase tracking-[0.08em] text-ink-500"
+            >
+              Iteration
+            </th>
+            {/* corner: week col */}
+            <th
+              style={{ left: ITER_W, width: WEEK_W, minWidth: WEEK_W }}
+              className="sticky top-0 z-30 h-9 border-b border-r border-ink-200 bg-ink-50 px-2 py-2 text-left align-middle text-[10.5px] font-semibold uppercase tracking-[0.08em] text-ink-500"
+            >
+              Week
+            </th>
+            {state.people.map(person => (
+              <th
+                key={person.id}
+                className="group/col sticky top-0 z-20 h-9 min-w-[140px] border-b border-r border-ink-200 bg-ink-50 px-2 py-1 text-left align-middle"
+              >
+                <div className="flex items-center gap-1">
+                  <input
+                    value={person.name}
+                    onChange={e => props.renamePerson(person.id, e.target.value)}
+                    className="min-w-0 flex-1 rounded border border-transparent bg-transparent px-2 py-1 text-[12.5px] font-semibold text-ink-900 outline-none transition hover:bg-white hover:shadow-sm focus:border-ink-300 focus:bg-white focus:ring-2 focus:ring-brand-200"
+                  />
+                  <IconButton
+                    danger
+                    title="Remove person"
+                    className="opacity-0 group-hover/col:opacity-100 focus:opacity-100"
+                    onClick={() => {
+                      if (confirm(`Remove ${person.name}?`)) props.removePerson(person.id);
+                    }}
+                  >
+                    ×
+                  </IconButton>
+                </div>
+              </th>
+            ))}
+            {/* + Person */}
+            <th className="sticky top-0 z-20 h-9 w-10 border-b border-r border-ink-200 bg-ink-50 px-1 align-middle">
+              <button
+                type="button"
+                onClick={() => props.addPerson()}
+                title="Add person"
+                className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-ink-200 bg-white text-[14px] font-semibold leading-none text-ink-600 shadow-sm transition hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700"
+              >
+                +
+              </button>
+            </th>
+            {/* Notes col */}
+            <th className="sticky top-0 z-20 h-9 w-[220px] min-w-[180px] border-b border-ink-200 bg-ink-50 px-3 align-middle text-left text-[10.5px] font-semibold uppercase tracking-[0.08em] text-ink-500">
+              Notes
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {state.iterations.length === 0 && (
+            <tr>
+              <td
+                colSpan={4 + state.people.length}
+                className="px-6 py-10 text-center text-[13px] text-ink-500"
+              >
+                Click <span className="rounded bg-white px-1.5 py-0.5 font-medium text-ink-700 ring-1 ring-ink-200">+ Iteration</span> to add 2 weeks.
+              </td>
+            </tr>
+          )}
+          {state.iterations.map((iter, iterIdx) => {
+            const isCurrent = iter.id === currentIterationId;
+            const weeks = allWeeks.filter(w => w.iterationId === iter.id);
+            const iterBg = isCurrent
+              ? 'bg-amber-100 text-amber-800'
+              : (iterIdx % 2 === 0 ? 'bg-brand-50 text-brand-700' : 'bg-indigo-50 text-indigo-700');
+            return weeks.map((w, weekIdx) => {
+              const globalWeekIdx = allWeeks.findIndex(x => x.id === w.id);
+              return (
+                <tr key={w.id} className="group/row">
+                  {weekIdx === 0 && (
+                    <td
+                      data-iter-id={iter.id}
+                      rowSpan={weeks.length}
+                      style={{ left: 0, width: ITER_W, minWidth: ITER_W }}
+                      className={
+                        'sticky z-10 border-b border-r border-ink-200 px-2 py-2 align-top text-[11px] font-semibold uppercase tracking-[0.06em] ' +
+                        iterBg
+                      }
+                    >
+                      <div className="flex flex-col items-start gap-1">
+                        <div className="flex items-center gap-1">
+                          <span>Iter {iterIdx + 1}</span>
+                          {isCurrent && (
+                            <span
+                              className="rounded-full bg-amber-500 px-1.5 py-px text-[8px] font-bold uppercase tracking-[0.08em] text-white"
+                              title="Today is in this iteration"
+                            >
+                              Now
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-0.5">
+                          <label
+                            className="relative inline-flex h-4 w-4 cursor-pointer items-center justify-center rounded text-current opacity-50 transition hover:bg-white/50 hover:opacity-100"
+                            title={`Set start date (currently ${iter.startDate})`}
+                          >
+                            <svg width="11" height="11" viewBox="0 0 14 14" fill="none" aria-hidden>
+                              <rect x="2" y="3" width="10" height="9" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
+                              <path d="M2 6h10" stroke="currentColor" strokeWidth="1.3" />
+                              <path d="M5 2v2M9 2v2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+                            </svg>
+                            <input
+                              type="date"
+                              value={iter.startDate}
+                              onChange={e => {
+                                if (e.target.value) props.setIterationStart(iter.id, e.target.value);
+                              }}
+                              className="absolute inset-0 cursor-pointer opacity-0"
+                              aria-label="Iteration start date"
+                            />
+                          </label>
+                          <button
+                            onClick={() => {
+                              if (confirm('Remove this iteration (both weeks)?')) props.removeIteration(iter.id);
+                            }}
+                            title="Remove iteration"
+                            className="inline-flex h-4 w-4 items-center justify-center rounded text-current opacity-50 hover:bg-white/50 hover:opacity-100"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      </div>
+                    </td>
+                  )}
+                  <td
+                    style={{ left: ITER_W, width: WEEK_W, minWidth: WEEK_W }}
+                    className={
+                      'sticky z-10 border-b border-r border-ink-200 px-2 py-2 align-middle text-[11px] font-medium tabular-nums ' +
+                      (isCurrent ? 'bg-amber-50 text-amber-800' : 'bg-ink-50/70 text-ink-600')
+                    }
+                  >
+                    {w.label}
+                  </td>
+                  {state.people.map((person, colIdx) => {
+                    const cellAssigns = state.assignments.filter(
+                      a => a.personId === person.id && a.weekId === w.id,
+                    );
+                    const isDri = cellAssigns.some(
+                      a => lookupProject(projectsById, a.projectId)?.driId === person.id,
+                    );
+                    const inExtendPreview =
+                      !!extending &&
+                      extending.personId === person.id &&
+                      globalWeekIdx > extending.fromIdx &&
+                      globalWeekIdx <= extending.toIdx;
+                    const extendPreviewProject = inExtendPreview
+                      ? lookupProject(projectsById, extending!.projectId)
+                      : undefined;
+                    return (
+                      <Cell
+                        key={person.id}
+                        rowAlt={colIdx % 2 === 1}
+                        personId={person.id}
+                        weekId={w.id}
+                        assignments={cellAssigns}
+                        projectsById={projectsById}
+                        isDri={isDri}
+                        isIterEnd={false}
+                        isCurrentWeek={isCurrent}
+                        extendPreviewProject={extendPreviewProject}
+                        onAdd={pid => props.addAssignment(person.id, w.id, pid)}
+                        onMove={aid => props.moveAssignment(aid, person.id, w.id)}
+                        onRemove={props.removeAssignment}
+                        onPick={rect => setPicker({ personId: person.id, weekId: w.id, rect })}
+                        onStartExtend={(projectId) => startExtend(person.id, projectId, w.id)}
+                      />
+                    );
+                  })}
+                  {/* + Person spacer cell to match header */}
+                  <td className={'border-b border-r border-ink-200 ' + (isCurrent ? 'bg-amber-50/40' : '')}></td>
+                  {/* Notes col */}
+                  <td
+                    className={
+                      'border-b border-l border-ink-200 p-1 align-middle ' +
+                      (isCurrent ? 'bg-amber-50/40' : 'bg-white')
+                    }
+                  >
+                    <input
+                      value={state.weekNotes?.[w.id] ?? ''}
+                      onChange={e => props.setWeekNote(w.id, e.target.value)}
+                      placeholder="Add note…"
+                      className="block w-full rounded border border-transparent bg-transparent px-2 py-1 text-[12px] text-ink-700 outline-none transition placeholder:text-ink-300 hover:bg-white hover:shadow-sm focus:border-ink-300 focus:bg-white focus:ring-2 focus:ring-brand-200"
+                    />
+                  </td>
+                </tr>
+              );
+            });
+          })}
         </tbody>
       </table>
 
