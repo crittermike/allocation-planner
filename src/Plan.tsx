@@ -1025,6 +1025,9 @@ function AssignChip(props: {
 /* Projects table                                                */
 /* ============================================================ */
 
+type SortKey = 'name' | 'estimated' | 'planned';
+type SortDir = 'asc' | 'desc';
+
 function ProjectsTable(props: {
   projects: Project[];
   people: Person[];
@@ -1033,21 +1036,83 @@ function ProjectsTable(props: {
   updateProject: (id: ID, p: Partial<Project>) => void;
   removeProject: (id: ID) => void;
 }) {
+  const [sortKey, setSortKey] = useState<SortKey | null>(null);
+  const [sortDir, setSortDir] = useState<SortDir>('asc');
+
+  const sortedProjects = useMemo(() => {
+    if (!sortKey) return props.projects;
+    const arr = [...props.projects];
+    const dir = sortDir === 'asc' ? 1 : -1;
+    arr.sort((a, b) => {
+      let av: number | string;
+      let bv: number | string;
+      if (sortKey === 'name') {
+        av = a.name.toLowerCase();
+        bv = b.name.toLowerCase();
+      } else if (sortKey === 'estimated') {
+        av = a.estimatedWeeks ?? -Infinity;
+        bv = b.estimatedWeeks ?? -Infinity;
+      } else {
+        av = props.plannedByProject[a.id] ?? 0;
+        bv = props.plannedByProject[b.id] ?? 0;
+      }
+      if (av < bv) return -1 * dir;
+      if (av > bv) return 1 * dir;
+      return 0;
+    });
+    return arr;
+  }, [props.projects, props.plannedByProject, sortKey, sortDir]);
+
+  const toggleSort = (key: SortKey) => {
+    if (sortKey === key) {
+      setSortDir(d => (d === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortKey(key);
+      setSortDir(key === 'name' ? 'asc' : 'desc');
+    }
+  };
+
+  const arrow = (key: SortKey) => {
+    if (sortKey !== key) return <span className="ml-1 text-ink-300">↕</span>;
+    return <span className="ml-1 text-brand-600">{sortDir === 'asc' ? '↑' : '↓'}</span>;
+  };
+
+  const sortableThClass =
+    'sticky top-0 z-10 cursor-pointer select-none border-b border-ink-200 bg-ink-50/80 py-2.5 px-3 text-left backdrop-blur hover:bg-ink-100/80 transition-colors';
+
   return (
     <table className="w-full border-separate border-spacing-0 text-[13px]">
       <thead>
         <tr className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-ink-500">
           <th className="sticky top-0 z-10 w-[72px] border-b border-ink-200 bg-ink-50/80 py-2.5 pl-4 pr-1 text-left backdrop-blur"></th>
-          <th className="sticky top-0 z-10 border-b border-ink-200 bg-ink-50/80 py-2.5 pl-2 pr-3 text-left backdrop-blur">Project</th>
+          <th
+            className={`${sortableThClass} pl-2 pr-3`}
+            onClick={() => toggleSort('name')}
+            aria-sort={sortKey === 'name' ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
+          >
+            Project{arrow('name')}
+          </th>
           <th className="sticky top-0 z-10 w-[170px] border-b border-ink-200 bg-ink-50/80 py-2.5 px-3 text-left backdrop-blur">DRI</th>
-          <th className="sticky top-0 z-10 w-[110px] border-b border-ink-200 bg-ink-50/80 py-2.5 px-3 text-left backdrop-blur">Est.</th>
-          <th className="sticky top-0 z-10 w-[120px] border-b border-ink-200 bg-ink-50/80 py-2.5 px-3 text-left backdrop-blur">Planned</th>
+          <th
+            className={`${sortableThClass} w-[110px]`}
+            onClick={() => toggleSort('estimated')}
+            aria-sort={sortKey === 'estimated' ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
+          >
+            Est.{arrow('estimated')}
+          </th>
+          <th
+            className={`${sortableThClass} w-[120px]`}
+            onClick={() => toggleSort('planned')}
+            aria-sort={sortKey === 'planned' ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
+          >
+            Planned{arrow('planned')}
+          </th>
           <th className="sticky top-0 z-10 border-b border-ink-200 bg-ink-50/80 py-2.5 px-3 text-left backdrop-blur">URL</th>
           <th className="sticky top-0 z-10 w-[56px] border-b border-ink-200 bg-ink-50/80 py-2.5 pl-3 pr-4 text-right backdrop-blur"></th>
         </tr>
       </thead>
       <tbody>
-        {props.projects.length === 0 && (
+        {sortedProjects.length === 0 && (
           <tr>
             <td colSpan={7} className="px-6 py-12 text-center">
               <div className="mx-auto max-w-sm text-ink-500">
@@ -1057,7 +1122,7 @@ function ProjectsTable(props: {
             </td>
           </tr>
         )}
-        {props.projects.map(p => (
+        {sortedProjects.map(p => (
           <ProjectRow
             key={p.id}
             project={p}
