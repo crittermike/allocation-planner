@@ -71,9 +71,11 @@ const initialIterations = () => {
   }));
 };
 
+const initialPeople = () => [1, 2, 3].map((n) => ({ id: uid(), name: `Person ${n}` }));
+
 const freshState = (title) => ({
   title,
-  people: [],
+  people: initialPeople(),
   projects: [],
   iterations: initialIterations(),
   assignments: [],
