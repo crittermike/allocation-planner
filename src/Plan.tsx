@@ -194,14 +194,17 @@ function PlanView({
       people: s.people.filter(p => p.id !== id),
       assignments: s.assignments.filter(a => a.personId !== id),
     }));
-  const addProject = () =>
+  const addProject = (): ID => {
+    const id = uid();
     setState(s => ({
       ...s,
       projects: [
         ...s.projects,
-        { id: uid(), name: 'New project', color: COLORS[s.projects.length % COLORS.length], driId: null },
+        { id, name: 'New project', color: COLORS[s.projects.length % COLORS.length], driId: null },
       ],
     }));
+    return id;
+  };
   const updateProject = (id: ID, patch: Partial<Project>) =>
     setState(s => ({
       ...s,
@@ -305,6 +308,7 @@ function PlanView({
       return false;
     }
   });
+  const [editingProjectId, setEditingProjectId] = useState<ID | null>(null);
   useEffect(() => {
     try { localStorage.setItem(TRANSPOSED_KEY, transposed ? '1' : '0'); } catch {}
     // re-trigger auto-scroll on layout swap
@@ -377,7 +381,13 @@ function PlanView({
     window.addEventListener('mouseup', onUp);
   };
 
+  const editingProject = useMemo(
+    () => state.projects.find(p => p.id === editingProjectId) ?? null,
+    [state.projects, editingProjectId],
+  );
+
   return (
+    <>
     <div className="flex h-screen w-screen flex-col">
       {/* Toolbar */}
       <div className="relative z-10 flex items-center gap-2 border-b border-ink-200/80 bg-white/70 px-4 py-2.5 backdrop-blur-md">
@@ -502,7 +512,8 @@ function PlanView({
               className="inline-flex h-7 items-center gap-1 rounded-md bg-gradient-to-b from-brand-600 to-brand-700 px-3 text-[12px] font-semibold text-white shadow-sm transition hover:from-brand-700 hover:to-brand-700 active:scale-[0.98]"
               onClick={() => {
                 if (panel.collapsed) setPanel(p => ({ ...p, collapsed: false }));
-                addProject();
+                const id = addProject();
+                setEditingProjectId(id);
               }}
             >
               <span className="text-[14px] leading-none">+</span> Add project
@@ -518,12 +529,26 @@ function PlanView({
                 updateProject={updateProject}
                 removeProject={removeProject}
                 compact={transposed}
+                editingId={editingProjectId}
+                onStartEdit={id => setEditingProjectId(id)}
+                onStopEdit={() => setEditingProjectId(null)}
               />
             </div>
           )}
         </div>
       </div>
     </div>
+    {editingProject && (
+      <ProjectEditModal
+        project={editingProject}
+        people={state.people}
+        planned={plannedByProject[editingProject.id] ?? 0}
+        onUpdate={patch => updateProject(editingProject.id, patch)}
+        onRemove={() => removeProject(editingProject.id)}
+        onClose={() => setEditingProjectId(null)}
+      />
+    )}
+    </>
   );
 }
 
@@ -1430,6 +1455,9 @@ function ProjectsTable(props: {
   updateProject: (id: ID, p: Partial<Project>) => void;
   removeProject: (id: ID) => void;
   compact?: boolean;
+  editingId: ID | null;
+  onStartEdit: (id: ID) => void;
+  onStopEdit: () => void;
 }) {
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
   const [sortDir, setSortDir] = useState<SortDir>('asc');
@@ -1482,134 +1510,73 @@ function ProjectsTable(props: {
     return <span className="ml-1 text-brand-600">{sortDir === 'asc' ? '↑' : '↓'}</span>;
   };
 
-  const sortableThClass =
-    'sticky top-0 z-10 cursor-pointer select-none border-b border-ink-200 bg-ink-50/80 py-2.5 px-3 text-left backdrop-blur hover:bg-ink-100/80 transition-colors';
-
-  if (props.compact) {
-    const sortBtn = (label: string, key: SortKey, extra?: React.ReactNode) => (
-      <button
-        type="button"
-        onClick={() => toggleSort(key)}
-        className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-ink-500 hover:bg-ink-100"
-      >
-        {label}
-        {extra}
-        {arrow(key)}
-      </button>
-    );
-    return (
-      <div className="flex flex-col">
-        <div className="sticky top-0 z-10 flex flex-wrap items-center gap-2 border-b border-ink-200 bg-ink-50/80 px-3 py-2 backdrop-blur">
-          <span className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-ink-500">Sort:</span>
-          {sortBtn('Project', 'name')}
-          {sortBtn('Est.', 'estimated', totals.estimated > 0 && (
-            <span className="ml-0.5 normal-case tracking-normal text-ink-400">· {totals.estimated} wk</span>
-          ))}
-          {sortBtn('Planned', 'planned', (
-            <span className="ml-0.5 normal-case tracking-normal text-ink-400">
-              · {totals.planned}{totals.estimated > 0 ? ` / ${totals.estimated}` : ''} wk
-            </span>
-          ))}
-        </div>
-        {sortedProjects.length === 0 && (
-          <div className="px-6 py-12 text-center">
-            <div className="mx-auto max-w-sm text-ink-500">
-              <div className="mb-2 text-[20px]">🗂️</div>
-              <div className="text-[13px]">No projects yet. Click <span className="rounded bg-ink-100 px-1.5 py-0.5 font-semibold">+ Add project</span> above to create one.</div>
-            </div>
-          </div>
-        )}
-        <div className="flex flex-col">
-          {sortedProjects.map(p => (
-            <ProjectRow
-              key={p.id}
-              project={p}
-              people={props.people}
-              planned={props.plannedByProject[p.id] ?? 0}
-              onUpdate={patch => props.updateProject(p.id, patch)}
-              onRemove={() => {
-                if (confirm(`Delete project "${p.name}"?`)) props.removeProject(p.id);
-              }}
-              compact
-            />
-          ))}
-        </div>
-      </div>
-    );
-  }
+  const sortBtn = (label: string, key: SortKey, extra?: React.ReactNode) => (
+    <button
+      type="button"
+      onClick={() => toggleSort(key)}
+      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-ink-500 hover:bg-ink-100"
+    >
+      {label}
+      {extra}
+      {arrow(key)}
+    </button>
+  );
 
   return (
-    <table className="w-full border-separate border-spacing-0 text-[13px]">
-      <thead>
-        <tr className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-ink-500">
-          <th className="sticky top-0 z-10 w-[72px] border-b border-ink-200 bg-ink-50/80 py-2.5 pl-4 pr-1 text-left backdrop-blur"></th>
-          <th
-            className={`${sortableThClass} pl-2 pr-3`}
-            onClick={() => toggleSort('name')}
-            aria-sort={sortKey === 'name' ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
-          >
-            Project{arrow('name')}
-          </th>
-          <th className="sticky top-0 z-10 w-[170px] border-b border-ink-200 bg-ink-50/80 py-2.5 px-3 text-left backdrop-blur">DRI</th>
-          <th
-            className={`${sortableThClass} w-[110px]`}
-            onClick={() => toggleSort('estimated')}
-            aria-sort={sortKey === 'estimated' ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
-          >
-            Est.{totals.estimated > 0 && (
-              <span className="ml-1 normal-case tracking-normal text-ink-400">· {totals.estimated} wk</span>
-            )}{arrow('estimated')}
-          </th>
-          <th
-            className={`${sortableThClass} w-[170px]`}
-            onClick={() => toggleSort('planned')}
-            aria-sort={sortKey === 'planned' ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
-          >
-            Planned
-            <span className="ml-1 normal-case tracking-normal text-ink-400">
-              · {totals.planned}{totals.estimated > 0 ? ` / ${totals.estimated}` : ''} wk
-            </span>
-            {arrow('planned')}
-          </th>
-          <th className="sticky top-0 z-10 border-b border-ink-200 bg-ink-50/80 py-2.5 px-3 text-left backdrop-blur">URL</th>
-          <th className="sticky top-0 z-10 w-[56px] border-b border-ink-200 bg-ink-50/80 py-2.5 pl-3 pr-4 text-right backdrop-blur"></th>
-        </tr>
-      </thead>
-      <tbody>
-        {sortedProjects.length === 0 && (
-          <tr>
-            <td colSpan={7} className="px-6 py-12 text-center">
-              <div className="mx-auto max-w-sm text-ink-500">
-                <div className="mb-2 text-[20px]">🗂️</div>
-                <div className="text-[13px]">No projects yet. Click <span className="rounded bg-ink-100 px-1.5 py-0.5 font-semibold">+ Add project</span> above to create one.</div>
-              </div>
-            </td>
-          </tr>
-        )}
+    <div className="flex flex-col">
+      <div className="sticky top-0 z-10 flex flex-wrap items-center gap-2 border-b border-ink-200 bg-ink-50/80 px-3 py-2 backdrop-blur">
+        <span className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-ink-500">Sort:</span>
+        {sortBtn('Project', 'name')}
+        {sortBtn('Est.', 'estimated', totals.estimated > 0 && (
+          <span className="ml-0.5 normal-case tracking-normal text-ink-400">· {totals.estimated} wk</span>
+        ))}
+        {sortBtn('Planned', 'planned', (
+          <span className="ml-0.5 normal-case tracking-normal text-ink-400">
+            · {totals.planned}{totals.estimated > 0 ? ` / ${totals.estimated}` : ''} wk
+          </span>
+        ))}
+      </div>
+      {sortedProjects.length === 0 && (
+        <div className="px-6 py-12 text-center">
+          <div className="mx-auto max-w-sm text-ink-500">
+            <div className="mb-2 text-[20px]">🗂️</div>
+            <div className="text-[13px]">No projects yet. Click <span className="rounded bg-ink-100 px-1.5 py-0.5 font-semibold">+ Add project</span> above to create one.</div>
+          </div>
+        </div>
+      )}
+      <div className="flex flex-col">
         {sortedProjects.map(p => (
           <ProjectRow
             key={p.id}
             project={p}
             people={props.people}
+            peopleById={props.peopleById}
             planned={props.plannedByProject[p.id] ?? 0}
+            onStartEdit={() => props.onStartEdit(p.id)}
             onUpdate={patch => props.updateProject(p.id, patch)}
             onRemove={() => {
-              if (confirm(`Delete project "${p.name}"?`)) props.removeProject(p.id);
+              if (confirm(`Delete project "${p.name}"?`)) {
+                if (props.editingId === p.id) props.onStopEdit();
+                props.removeProject(p.id);
+              }
             }}
+            compact={!!props.compact}
           />
         ))}
-      </tbody>
-    </table>
+      </div>
+    </div>
   );
 }
 
 function ProjectRow(props: {
   project: Project;
   people: Person[];
+  peopleById: Record<ID, Person>;
   planned: number;
+  onStartEdit: () => void;
   onUpdate: (patch: Partial<Project>) => void;
   onRemove: () => void;
-  compact?: boolean;
+  compact: boolean;
 }) {
   const { project, planned } = props;
   const [colorOpen, setColorOpen] = useState(false);
@@ -1634,194 +1601,297 @@ function ProjectRow(props: {
   }
 
   const ink = inkFor(project.color);
+  const dri = project.driId ? props.peopleById[project.driId] : null;
 
-  if (props.compact) {
-    return (
-      <div className="group/row border-b border-ink-100 px-3 py-2.5 transition hover:bg-ink-50/60">
-        <div className="flex items-center gap-2">
-          <span
-            ref={swatchRef}
-            draggable
-            onDragStart={onChipDragStart}
-            onClick={() => {
-              if (swatchRef.current) setColorRect(swatchRef.current.getBoundingClientRect());
-              setColorOpen(true);
-            }}
-            title="Drag onto a cell to assign · Click to change color"
-            className="inline-flex h-6 w-9 shrink-0 cursor-grab items-center justify-center rounded-full border shadow-[inset_0_1px_0_rgba(255,255,255,0.6),0_1px_2px_rgba(15,23,42,0.06)] transition hover:-translate-y-px hover:shadow-md active:cursor-grabbing"
-            style={{ background: project.color, color: ink, borderColor: 'rgba(15,23,42,0.08)' }}
-          >
-            <span className="text-[9px] tracking-tighter opacity-50">⋮⋮</span>
-          </span>
-          {colorOpen && colorRect && (
-            <ColorPopover
-              rect={colorRect}
-              value={project.color}
-              onPick={c => { props.onUpdate({ color: c }); setColorOpen(false); }}
-              onClose={() => setColorOpen(false)}
-            />
-          )}
-          <input
-            className="min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-2 py-1 text-[13px] font-semibold text-ink-900 outline-none transition hover:bg-white hover:shadow-sm focus:border-ink-300 focus:bg-white focus:ring-2 focus:ring-brand-200"
-            value={project.name}
-            onChange={e => props.onUpdate({ name: e.target.value })}
-            placeholder="Untitled project"
-          />
-          <select
-            className="h-7 w-[110px] shrink-0 rounded-md border border-ink-200 bg-white px-2 text-[12.5px] outline-none transition hover:border-ink-300 focus:border-brand-400 focus:ring-2 focus:ring-brand-200"
-            value={project.driId ?? ''}
-            onChange={e => props.onUpdate({ driId: e.target.value || null })}
-            title="DRI"
-          >
-            <option value="">DRI: —</option>
-            {props.people.map(p => (
-              <option key={p.id} value={p.id}>DRI: {p.name}</option>
-            ))}
-          </select>
-          <IconButton danger title="Delete project" onClick={props.onRemove}>×</IconButton>
+  const chip = (
+    <>
+      <span
+        ref={swatchRef}
+        draggable
+        onDragStart={onChipDragStart}
+        onClick={() => {
+          if (swatchRef.current) setColorRect(swatchRef.current.getBoundingClientRect());
+          setColorOpen(true);
+        }}
+        title="Drag onto a cell to assign · Click to change color"
+        className="inline-flex h-7 w-10 shrink-0 cursor-grab items-center justify-center rounded-full border shadow-[inset_0_1px_0_rgba(255,255,255,0.6),0_1px_2px_rgba(15,23,42,0.06)] transition hover:-translate-y-px hover:shadow-md active:cursor-grabbing"
+        style={{ background: project.color, color: ink, borderColor: 'rgba(15,23,42,0.08)' }}
+      >
+        <span className="text-[9px] tracking-tighter opacity-50">⋮⋮</span>
+      </span>
+      {colorOpen && colorRect && (
+        <ColorPopover
+          rect={colorRect}
+          value={project.color}
+          onPick={c => { props.onUpdate({ color: c }); setColorOpen(false); }}
+          onClose={() => setColorOpen(false)}
+        />
+      )}
+    </>
+  );
+
+  const plannedBadge = (
+    <span
+      className={'inline-flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-[3px] text-[12px] tabular-nums ' + badgeClass}
+      title={est != null && est > 0 ? `${planned} planned / ${est} estimated eng-weeks` : 'Planned eng-weeks across all assignments'}
+    >
+      {badgeText} <span className="text-[10.5px] opacity-70">wk</span>
+    </span>
+  );
+
+  const driBadge = dri ? (
+    <span
+      className="inline-flex shrink-0 items-center gap-1 rounded-full border border-ink-200 bg-white px-2.5 py-[3px] text-[12px] text-ink-700"
+      title={`DRI: ${dri.name}`}
+    >
+      <span className="text-[11px] text-amber-500">★</span>
+      {dri.name}
+    </span>
+  ) : (
+    <span
+      className="inline-flex shrink-0 items-center gap-1 rounded-full border border-dashed border-ink-200 bg-transparent px-2.5 py-[3px] text-[12px] text-ink-400"
+      title="No DRI assigned"
+    >
+      No DRI
+    </span>
+  );
+
+  const editBtn = (
+    <button
+      type="button"
+      onClick={props.onStartEdit}
+      title="Edit project"
+      className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-ink-200 bg-white px-2 text-[12px] text-ink-600 transition hover:bg-ink-50 hover:text-ink-800"
+    >
+      ✎ Edit
+    </button>
+  );
+
+  const deleteBtn = (
+    <IconButton danger title="Delete project" onClick={props.onRemove}>×</IconButton>
+  );
+
+  const titleNode = project.url ? (
+    <a
+      href={project.url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="block truncate text-[13px] font-semibold text-ink-900 hover:text-brand-700 hover:underline"
+      title={`Open ${project.url}`}
+    >
+      {project.name || 'Untitled project'}
+    </a>
+  ) : (
+    <span className="block truncate text-[13px] font-semibold text-ink-900">{project.name || 'Untitled project'}</span>
+  );
+
+  return (
+    <div className="group/row border-b border-ink-100 transition hover:bg-ink-50/60">
+      {props.compact ? (
+        <div className="flex items-center gap-2 px-3 py-2.5">
+          {chip}
+          <div className="min-w-0 flex-1">
+            {titleNode}
+            <div className="mt-1 flex flex-wrap items-center gap-1.5">
+              {driBadge}
+              {plannedBadge}
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            {editBtn}
+            {deleteBtn}
+          </div>
         </div>
-        <div className="mt-1.5 flex items-center gap-2 pl-11">
-          <input
-            type="number"
-            min={0}
-            step={1}
-            placeholder="Est."
-            value={project.estimatedWeeks ?? ''}
-            onChange={e => {
-              const v = e.target.value;
-              props.onUpdate({ estimatedWeeks: v === '' ? undefined : Math.max(0, Number(v)) });
-            }}
-            title="Estimated eng-weeks"
-            className="h-7 w-14 shrink-0 rounded-md border border-ink-200 bg-white px-2 text-right text-[12.5px] tabular-nums outline-none transition hover:border-ink-300 focus:border-brand-400 focus:ring-2 focus:ring-brand-200"
-          />
-          <span
-            className={'inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-[2px] text-[11.5px] tabular-nums ' + badgeClass}
-            title="Planned eng-weeks across all assignments"
-          >
-            {badgeText} <span className="text-[10px] opacity-70">wk</span>
-          </span>
-          <input
-            type="url"
-            placeholder="https://github.com/.../issues/123"
-            value={project.url ?? ''}
-            onChange={e => props.onUpdate({ url: e.target.value || undefined })}
-            className="h-7 min-w-0 flex-1 rounded-md border border-ink-200 bg-white px-2 text-[12px] outline-none transition hover:border-ink-300 focus:border-brand-400 focus:ring-2 focus:ring-brand-200"
-          />
-          {project.url && (
-            <a
-              href={project.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              title={`Open ${project.url}`}
-              className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-ink-200 bg-white text-ink-500 transition hover:bg-brand-50 hover:text-brand-600"
-            >
-              ↗
-            </a>
-          )}
+      ) : (
+        <div className="flex items-center gap-3 px-4 py-2.5">
+          {chip}
+          <div className="min-w-0 flex-1">{titleNode}</div>
+          {driBadge}
+          {plannedBadge}
+          {editBtn}
+          {deleteBtn}
         </div>
-      </div>
-    );
+      )}
+    </div>
+  );
+}
+
+function ProjectEditModal(props: {
+  project: Project;
+  people: Person[];
+  planned: number;
+  onUpdate: (patch: Partial<Project>) => void;
+  onRemove: () => void;
+  onClose: () => void;
+}) {
+  const { project, planned } = props;
+  const swatchRef = useRef<HTMLButtonElement>(null);
+  const [colorOpen, setColorOpen] = useState(false);
+  const [colorRect, setColorRect] = useState<DOMRect | null>(null);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') props.onClose(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [props]);
+
+  const ink = inkFor(project.color);
+  const est = project.estimatedWeeks;
+  let badgeClass = 'bg-ink-100 text-ink-500 border-ink-200';
+  let badgeText = `${planned}`;
+  if (est != null && est > 0) {
+    badgeText = `${planned} / ${est}`;
+    if (planned > est) badgeClass = 'bg-rose-50 text-rose-700 border-rose-200 font-semibold';
+    else if (planned === est) badgeClass = 'bg-emerald-50 text-emerald-700 border-emerald-200 font-semibold';
+    else badgeClass = 'bg-ink-100 text-ink-700 border-ink-200';
+  } else if (planned === 0) {
+    badgeClass = 'bg-transparent text-ink-400 border-transparent';
   }
 
   return (
-    <tr className="group/row transition hover:bg-ink-50/60">
-      <td className="border-b border-ink-100 py-2 pl-4 pr-1 align-middle">
-        <span
-          ref={swatchRef}
-          draggable
-          onDragStart={onChipDragStart}
-          onClick={() => {
-            if (swatchRef.current) setColorRect(swatchRef.current.getBoundingClientRect());
-            setColorOpen(true);
-          }}
-          title="Drag onto a cell to assign · Click to change color"
-          className="inline-flex h-7 w-10 cursor-grab items-center justify-center rounded-full border shadow-[inset_0_1px_0_rgba(255,255,255,0.6),0_1px_2px_rgba(15,23,42,0.06)] transition hover:-translate-y-px hover:shadow-md active:cursor-grabbing"
-          style={{ background: project.color, color: ink, borderColor: 'rgba(15,23,42,0.08)' }}
-        >
-          <span className="text-[9px] tracking-tighter opacity-50">⋮⋮</span>
-        </span>
-        {colorOpen && colorRect && (
-          <ColorPopover
-            rect={colorRect}
-            value={project.color}
-            onPick={c => {
-              props.onUpdate({ color: c });
-              setColorOpen(false);
-            }}
-            onClose={() => setColorOpen(false)}
-          />
-        )}
-      </td>
-      <td className="border-b border-ink-100 py-2 pl-2 pr-3 align-middle">
-        <input
-          className="w-full rounded-md border border-transparent bg-transparent px-2 py-1.5 text-[13px] font-semibold text-ink-900 outline-none transition hover:bg-white hover:shadow-sm focus:border-ink-300 focus:bg-white focus:ring-2 focus:ring-brand-200"
-          value={project.name}
-          onChange={e => props.onUpdate({ name: e.target.value })}
-          placeholder="Untitled project"
-        />
-      </td>
-      <td className="border-b border-ink-100 px-3 py-2 align-middle">
-        <select
-          className="h-7 w-full rounded-md border border-ink-200 bg-white px-2 text-[13px] outline-none transition hover:border-ink-300 focus:border-brand-400 focus:ring-2 focus:ring-brand-200"
-          value={project.driId ?? ''}
-          onChange={e => props.onUpdate({ driId: e.target.value || null })}
-        >
-          <option value="">—</option>
-          {props.people.map(p => (
-            <option key={p.id} value={p.id}>{p.name}</option>
-          ))}
-        </select>
-      </td>
-      <td className="border-b border-ink-100 px-3 py-2 align-middle">
-        <input
-          type="number"
-          min={0}
-          step={1}
-          placeholder="—"
-          value={project.estimatedWeeks ?? ''}
-          onChange={e => {
-            const v = e.target.value;
-            props.onUpdate({
-              estimatedWeeks: v === '' ? undefined : Math.max(0, Number(v)),
-            });
-          }}
-          className="h-7 w-20 rounded-md border border-ink-200 bg-white px-2 text-right text-[13px] tabular-nums outline-none transition hover:border-ink-300 focus:border-brand-400 focus:ring-2 focus:ring-brand-200"
-        />
-      </td>
-      <td className="border-b border-ink-100 px-3 py-2 align-middle">
-        <span
-          className={'inline-flex items-center gap-1 rounded-full border px-2.5 py-[3px] text-[12px] tabular-nums ' + badgeClass}
-          title="Planned eng-weeks across all assignments"
-        >
-          {badgeText} <span className="text-[10.5px] opacity-70">wk</span>
-        </span>
-      </td>
-      <td className="border-b border-ink-100 px-3 py-2 align-middle">
-        <div className="flex items-center gap-1.5">
-          <input
-            type="url"
-            placeholder="https://github.com/.../issues/123"
-            value={project.url ?? ''}
-            onChange={e => props.onUpdate({ url: e.target.value || undefined })}
-            className="h-7 w-full rounded-md border border-ink-200 bg-white px-2 text-[12.5px] outline-none transition hover:border-ink-300 focus:border-brand-400 focus:ring-2 focus:ring-brand-200"
-          />
-          {project.url && (
-            <a
-              href={project.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              title={`Open ${project.url}`}
-              className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-ink-200 bg-white text-ink-500 transition hover:bg-brand-50 hover:text-brand-600"
-            >
-              ↗
-            </a>
-          )}
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink-900/40 px-4 py-12 backdrop-blur-sm"
+      onMouseDown={e => { if (e.target === e.currentTarget) props.onClose(); }}
+    >
+      <div className="anim-pop-in w-full max-w-lg rounded-2xl border border-ink-200 bg-white shadow-2xl">
+        <div className="flex items-center justify-between gap-3 border-b border-ink-100 px-5 py-3.5">
+          <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-500">Project</span>
+          <button
+            type="button"
+            onClick={props.onClose}
+            title="Close"
+            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-ink-500 hover:bg-ink-100 hover:text-ink-800"
+          >
+            ×
+          </button>
         </div>
-      </td>
-      <td className="border-b border-ink-100 pl-3 pr-4 py-2 text-right align-middle">
-        <IconButton danger title="Delete project" onClick={props.onRemove}>×</IconButton>
-      </td>
-    </tr>
+        <div className="flex flex-col gap-4 px-5 py-5">
+          <div className="flex items-end gap-3">
+            <div className="flex flex-col gap-1">
+              <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-500">Color</span>
+              <button
+                ref={swatchRef}
+                type="button"
+                onClick={() => {
+                  if (swatchRef.current) setColorRect(swatchRef.current.getBoundingClientRect());
+                  setColorOpen(true);
+                }}
+                title="Click to change color"
+                className="inline-flex h-9 w-12 items-center justify-center rounded-full border shadow-[inset_0_1px_0_rgba(255,255,255,0.6),0_1px_2px_rgba(15,23,42,0.06)] transition hover:-translate-y-px hover:shadow-md"
+                style={{ background: project.color, color: ink, borderColor: 'rgba(15,23,42,0.08)' }}
+              >
+                <span className="text-[10px] tracking-tighter opacity-50">⋮⋮</span>
+              </button>
+              {colorOpen && colorRect && (
+                <ColorPopover
+                  rect={colorRect}
+                  value={project.color}
+                  onPick={c => { props.onUpdate({ color: c }); setColorOpen(false); }}
+                  onClose={() => setColorOpen(false)}
+                />
+              )}
+            </div>
+            <label className="flex min-w-0 flex-1 flex-col gap-1">
+              <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-500">Name</span>
+              <input
+                autoFocus
+                className="h-9 w-full rounded-md border border-ink-200 bg-white px-3 text-[14px] font-semibold text-ink-900 outline-none transition focus:border-brand-400 focus:ring-2 focus:ring-brand-200"
+                value={project.name}
+                onChange={e => props.onUpdate({ name: e.target.value })}
+                placeholder="Untitled project"
+                onKeyDown={e => { if (e.key === 'Enter') props.onClose(); }}
+              />
+            </label>
+          </div>
+          <div className="grid grid-cols-[minmax(0,1fr)_110px_auto] items-end gap-3">
+            <label className="flex min-w-0 flex-col gap-1">
+              <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-500">DRI</span>
+              <select
+                className="h-9 rounded-md border border-ink-200 bg-white px-2 text-[13px] outline-none transition hover:border-ink-300 focus:border-brand-400 focus:ring-2 focus:ring-brand-200"
+                value={project.driId ?? ''}
+                onChange={e => props.onUpdate({ driId: e.target.value || null })}
+              >
+                <option value="">— None —</option>
+                {props.people.map(p => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-500">Estimated wk</span>
+              <input
+                type="number"
+                min={0}
+                step={1}
+                placeholder="—"
+                value={project.estimatedWeeks ?? ''}
+                onChange={e => {
+                  const v = e.target.value;
+                  props.onUpdate({ estimatedWeeks: v === '' ? undefined : Math.max(0, Number(v)) });
+                }}
+                className="h-9 rounded-md border border-ink-200 bg-white px-2 text-right text-[13px] tabular-nums outline-none transition hover:border-ink-300 focus:border-brand-400 focus:ring-2 focus:ring-brand-200"
+              />
+            </label>
+            <div className="flex flex-col gap-1">
+              <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-500">Planned</span>
+              <div className="flex h-9 items-center">
+                <span
+                  className={'inline-flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-[3px] text-[12px] tabular-nums ' + badgeClass}
+                  title={est != null && est > 0 ? `${planned} planned / ${est} estimated eng-weeks` : 'Planned eng-weeks across all assignments'}
+                >
+                  {badgeText} <span className="text-[10.5px] opacity-70">wk</span>
+                </span>
+              </div>
+            </div>
+          </div>
+          <label className="flex flex-col gap-1">
+            <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-500">URL (e.g. tracking issue)</span>
+            <div className="flex items-center gap-1.5">
+              <input
+                type="url"
+                placeholder="https://github.com/.../issues/123"
+                value={project.url ?? ''}
+                onChange={e => props.onUpdate({ url: e.target.value || undefined })}
+                className="h-9 min-w-0 flex-1 rounded-md border border-ink-200 bg-white px-3 text-[13px] outline-none transition hover:border-ink-300 focus:border-brand-400 focus:ring-2 focus:ring-brand-200"
+                onKeyDown={e => { if (e.key === 'Enter') props.onClose(); }}
+              />
+              {project.url && (
+                <a
+                  href={project.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={`Open ${project.url}`}
+                  className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-ink-200 bg-white text-ink-500 transition hover:bg-brand-50 hover:text-brand-600"
+                >
+                  ↗
+                </a>
+              )}
+            </div>
+          </label>
+        </div>
+        <div className="flex items-center justify-between gap-2 border-t border-ink-100 bg-ink-50/40 px-5 py-3">
+          <button
+            type="button"
+            onClick={() => {
+              if (confirm(`Delete project "${project.name}"?`)) {
+                props.onRemove();
+                props.onClose();
+              }
+            }}
+            className="inline-flex h-8 items-center gap-1 rounded-md border border-rose-200 bg-white px-3 text-[12.5px] text-rose-600 transition hover:bg-rose-50"
+          >
+            Delete project
+          </button>
+          <button
+            type="button"
+            onClick={props.onClose}
+            className="inline-flex h-8 items-center gap-1 rounded-md bg-gradient-to-b from-brand-600 to-brand-700 px-4 text-[12.5px] font-semibold text-white shadow-sm transition hover:from-brand-700 hover:to-brand-700 active:scale-[0.98]"
+          >
+            Done
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
