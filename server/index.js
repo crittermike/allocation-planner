@@ -53,11 +53,29 @@ const updatePlan = db.prepare(
 );
 const deletePlan = db.prepare('DELETE FROM plans WHERE slug = ?');
 
+const MS_PER_DAY = 86400000;
+const mondayOf = (d) => {
+  const day = d.getDay();
+  const offset = day === 0 ? -6 : 1 - day;
+  return new Date(d.getTime() + offset * MS_PER_DAY);
+};
+const toISODate = (d) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const uid = () => Math.random().toString(36).slice(2, 10);
+
+const initialIterations = () => {
+  const start = mondayOf(new Date());
+  return [0, 1, 2].map((i) => ({
+    id: uid(),
+    startDate: toISODate(new Date(start.getTime() + i * 14 * MS_PER_DAY)),
+  }));
+};
+
 const freshState = (title) => ({
   title,
   people: [],
   projects: [],
-  iterations: [],
+  iterations: initialIterations(),
   assignments: [],
 });
 
