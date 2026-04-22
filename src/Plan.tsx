@@ -517,6 +517,7 @@ function PlanView({
                 plannedByProject={plannedByProject}
                 updateProject={updateProject}
                 removeProject={removeProject}
+                compact={transposed}
               />
             </div>
           )}
@@ -1428,6 +1429,7 @@ function ProjectsTable(props: {
   plannedByProject: Record<ID, number>;
   updateProject: (id: ID, p: Partial<Project>) => void;
   removeProject: (id: ID) => void;
+  compact?: boolean;
 }) {
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
   const [sortDir, setSortDir] = useState<SortDir>('asc');
@@ -1482,6 +1484,59 @@ function ProjectsTable(props: {
 
   const sortableThClass =
     'sticky top-0 z-10 cursor-pointer select-none border-b border-ink-200 bg-ink-50/80 py-2.5 px-3 text-left backdrop-blur hover:bg-ink-100/80 transition-colors';
+
+  if (props.compact) {
+    const sortBtn = (label: string, key: SortKey, extra?: React.ReactNode) => (
+      <button
+        type="button"
+        onClick={() => toggleSort(key)}
+        className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-ink-500 hover:bg-ink-100"
+      >
+        {label}
+        {extra}
+        {arrow(key)}
+      </button>
+    );
+    return (
+      <div className="flex flex-col">
+        <div className="sticky top-0 z-10 flex flex-wrap items-center gap-2 border-b border-ink-200 bg-ink-50/80 px-3 py-2 backdrop-blur">
+          <span className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-ink-500">Sort:</span>
+          {sortBtn('Project', 'name')}
+          {sortBtn('Est.', 'estimated', totals.estimated > 0 && (
+            <span className="ml-0.5 normal-case tracking-normal text-ink-400">· {totals.estimated} wk</span>
+          ))}
+          {sortBtn('Planned', 'planned', (
+            <span className="ml-0.5 normal-case tracking-normal text-ink-400">
+              · {totals.planned}{totals.estimated > 0 ? ` / ${totals.estimated}` : ''} wk
+            </span>
+          ))}
+        </div>
+        {sortedProjects.length === 0 && (
+          <div className="px-6 py-12 text-center">
+            <div className="mx-auto max-w-sm text-ink-500">
+              <div className="mb-2 text-[20px]">🗂️</div>
+              <div className="text-[13px]">No projects yet. Click <span className="rounded bg-ink-100 px-1.5 py-0.5 font-semibold">+ Add project</span> above to create one.</div>
+            </div>
+          </div>
+        )}
+        <div className="flex flex-col">
+          {sortedProjects.map(p => (
+            <ProjectRow
+              key={p.id}
+              project={p}
+              people={props.people}
+              planned={props.plannedByProject[p.id] ?? 0}
+              onUpdate={patch => props.updateProject(p.id, patch)}
+              onRemove={() => {
+                if (confirm(`Delete project "${p.name}"?`)) props.removeProject(p.id);
+              }}
+              compact
+            />
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <table className="w-full border-separate border-spacing-0 text-[13px]">
@@ -1554,6 +1609,7 @@ function ProjectRow(props: {
   planned: number;
   onUpdate: (patch: Partial<Project>) => void;
   onRemove: () => void;
+  compact?: boolean;
 }) {
   const { project, planned } = props;
   const [colorOpen, setColorOpen] = useState(false);
@@ -1578,6 +1634,96 @@ function ProjectRow(props: {
   }
 
   const ink = inkFor(project.color);
+
+  if (props.compact) {
+    return (
+      <div className="group/row border-b border-ink-100 px-3 py-2.5 transition hover:bg-ink-50/60">
+        <div className="flex items-center gap-2">
+          <span
+            ref={swatchRef}
+            draggable
+            onDragStart={onChipDragStart}
+            onClick={() => {
+              if (swatchRef.current) setColorRect(swatchRef.current.getBoundingClientRect());
+              setColorOpen(true);
+            }}
+            title="Drag onto a cell to assign · Click to change color"
+            className="inline-flex h-6 w-9 shrink-0 cursor-grab items-center justify-center rounded-full border shadow-[inset_0_1px_0_rgba(255,255,255,0.6),0_1px_2px_rgba(15,23,42,0.06)] transition hover:-translate-y-px hover:shadow-md active:cursor-grabbing"
+            style={{ background: project.color, color: ink, borderColor: 'rgba(15,23,42,0.08)' }}
+          >
+            <span className="text-[9px] tracking-tighter opacity-50">⋮⋮</span>
+          </span>
+          {colorOpen && colorRect && (
+            <ColorPopover
+              rect={colorRect}
+              value={project.color}
+              onPick={c => { props.onUpdate({ color: c }); setColorOpen(false); }}
+              onClose={() => setColorOpen(false)}
+            />
+          )}
+          <input
+            className="min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-2 py-1 text-[13px] font-semibold text-ink-900 outline-none transition hover:bg-white hover:shadow-sm focus:border-ink-300 focus:bg-white focus:ring-2 focus:ring-brand-200"
+            value={project.name}
+            onChange={e => props.onUpdate({ name: e.target.value })}
+            placeholder="Untitled project"
+          />
+          <IconButton danger title="Delete project" onClick={props.onRemove}>×</IconButton>
+        </div>
+        <div className="mt-1.5 grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2 pl-11">
+          <select
+            className="h-7 min-w-0 rounded-md border border-ink-200 bg-white px-2 text-[12.5px] outline-none transition hover:border-ink-300 focus:border-brand-400 focus:ring-2 focus:ring-brand-200"
+            value={project.driId ?? ''}
+            onChange={e => props.onUpdate({ driId: e.target.value || null })}
+            title="DRI"
+          >
+            <option value="">DRI: —</option>
+            {props.people.map(p => (
+              <option key={p.id} value={p.id}>DRI: {p.name}</option>
+            ))}
+          </select>
+          <input
+            type="number"
+            min={0}
+            step={1}
+            placeholder="Est."
+            value={project.estimatedWeeks ?? ''}
+            onChange={e => {
+              const v = e.target.value;
+              props.onUpdate({ estimatedWeeks: v === '' ? undefined : Math.max(0, Number(v)) });
+            }}
+            title="Estimated eng-weeks"
+            className="h-7 w-14 rounded-md border border-ink-200 bg-white px-2 text-right text-[12.5px] tabular-nums outline-none transition hover:border-ink-300 focus:border-brand-400 focus:ring-2 focus:ring-brand-200"
+          />
+          <span
+            className={'inline-flex items-center gap-1 rounded-full border px-2 py-[2px] text-[11.5px] tabular-nums ' + badgeClass}
+            title="Planned eng-weeks across all assignments"
+          >
+            {badgeText} <span className="text-[10px] opacity-70">wk</span>
+          </span>
+        </div>
+        <div className="mt-1.5 flex items-center gap-1.5 pl-11">
+          <input
+            type="url"
+            placeholder="https://github.com/.../issues/123"
+            value={project.url ?? ''}
+            onChange={e => props.onUpdate({ url: e.target.value || undefined })}
+            className="h-7 min-w-0 flex-1 rounded-md border border-ink-200 bg-white px-2 text-[12px] outline-none transition hover:border-ink-300 focus:border-brand-400 focus:ring-2 focus:ring-brand-200"
+          />
+          {project.url && (
+            <a
+              href={project.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={`Open ${project.url}`}
+              className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-ink-200 bg-white text-ink-500 transition hover:bg-brand-50 hover:text-brand-600"
+            >
+              ↗
+            </a>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <tr className="group/row transition hover:bg-ink-50/60">
