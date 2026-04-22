@@ -1667,11 +1667,8 @@ function ProjectRow(props: {
             onChange={e => props.onUpdate({ name: e.target.value })}
             placeholder="Untitled project"
           />
-          <IconButton danger title="Delete project" onClick={props.onRemove}>×</IconButton>
-        </div>
-        <div className="mt-1.5 grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2 pl-11">
           <select
-            className="h-7 min-w-0 rounded-md border border-ink-200 bg-white px-2 text-[12.5px] outline-none transition hover:border-ink-300 focus:border-brand-400 focus:ring-2 focus:ring-brand-200"
+            className="h-7 w-[110px] shrink-0 rounded-md border border-ink-200 bg-white px-2 text-[12.5px] outline-none transition hover:border-ink-300 focus:border-brand-400 focus:ring-2 focus:ring-brand-200"
             value={project.driId ?? ''}
             onChange={e => props.onUpdate({ driId: e.target.value || null })}
             title="DRI"
@@ -1681,6 +1678,9 @@ function ProjectRow(props: {
               <option key={p.id} value={p.id}>DRI: {p.name}</option>
             ))}
           </select>
+          <IconButton danger title="Delete project" onClick={props.onRemove}>×</IconButton>
+        </div>
+        <div className="mt-1.5 flex items-center gap-2 pl-11">
           <input
             type="number"
             min={0}
@@ -1692,16 +1692,14 @@ function ProjectRow(props: {
               props.onUpdate({ estimatedWeeks: v === '' ? undefined : Math.max(0, Number(v)) });
             }}
             title="Estimated eng-weeks"
-            className="h-7 w-14 rounded-md border border-ink-200 bg-white px-2 text-right text-[12.5px] tabular-nums outline-none transition hover:border-ink-300 focus:border-brand-400 focus:ring-2 focus:ring-brand-200"
+            className="h-7 w-14 shrink-0 rounded-md border border-ink-200 bg-white px-2 text-right text-[12.5px] tabular-nums outline-none transition hover:border-ink-300 focus:border-brand-400 focus:ring-2 focus:ring-brand-200"
           />
           <span
-            className={'inline-flex items-center gap-1 rounded-full border px-2 py-[2px] text-[11.5px] tabular-nums ' + badgeClass}
+            className={'inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-[2px] text-[11.5px] tabular-nums ' + badgeClass}
             title="Planned eng-weeks across all assignments"
           >
             {badgeText} <span className="text-[10px] opacity-70">wk</span>
           </span>
-        </div>
-        <div className="mt-1.5 flex items-center gap-1.5 pl-11">
           <input
             type="url"
             placeholder="https://github.com/.../issues/123"
