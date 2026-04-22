@@ -517,7 +517,7 @@ function PlanView({
                 plannedByProject={plannedByProject}
                 updateProject={updateProject}
                 removeProject={removeProject}
-                compact={transposed && panel.height < 640}
+                compact={transposed}
               />
             </div>
           )}
