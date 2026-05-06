@@ -948,18 +948,12 @@ function Chart(props: {
                   <th
                     key={`${iter.id}:collapsed`}
                     className={
-                      'sticky top-9 z-20 h-8 min-w-[72px] border-b border-r-2 border-r-ink-300 px-2 text-center text-[10px] font-semibold uppercase tracking-[0.06em] ' +
+                      'sticky top-9 z-20 h-6 min-w-[28px] cursor-pointer border-b border-r-2 border-r-ink-300 px-0 ' +
                       weekToneClass
                     }
+                    onClick={() => props.toggleIterationCollapsed(iter.id)}
+                    title="Expand iteration"
                   >
-                    <button
-                      type="button"
-                      onClick={() => props.toggleIterationCollapsed(iter.id)}
-                      className="rounded px-1.5 py-0.5 transition hover:bg-white/70"
-                      title="Expand iteration"
-                    >
-                      2 wk hidden
-                    </button>
                   </th>
                 );
               }
@@ -1013,20 +1007,11 @@ function Chart(props: {
               </td>
               {iterationRows.map(({ iter, tone, isCollapsed, weeks }) => {
                 if (isCollapsed) {
-                  const weekIds = new Set(weeks.map(w => w.id));
-                  const collapsedAssigns = state.assignments.filter(
-                    a => a.personId === person.id && weekIds.has(a.weekId),
-                  );
-                  const isDri = collapsedAssigns.some(
-                    a => lookupProject(projectsById, a.projectId)?.driId === person.id,
-                  );
                   return (
                     <CollapsedIterationCell
                       key={`${iter.id}:collapsed:${person.id}`}
                       rowAlt={rowIdx % 2 === 1}
                       tone={tone}
-                      assignmentCount={collapsedAssigns.length}
-                      isDri={isDri}
                       isIterEnd
                       onExpand={() => props.toggleIterationCollapsed(iter.id)}
                     />
@@ -1080,12 +1065,10 @@ function Chart(props: {
             </td>
             {iterationRows.map(({ iter, tone, isCollapsed, weeks }) => {
               if (isCollapsed) {
-                const noteCount = weeks.filter(w => state.weekNotes?.[w.id]?.trim()).length;
                 return (
                   <CollapsedNotesCell
                     key={`${iter.id}:notes-collapsed`}
                     tone={tone}
-                    noteCount={noteCount}
                     topBorder
                     onExpand={() => props.toggleIterationCollapsed(iter.id)}
                   />
@@ -1146,8 +1129,6 @@ function Chart(props: {
 function CollapsedIterationCell(props: {
   rowAlt: boolean;
   tone: IterationTone;
-  assignmentCount: number;
-  isDri: boolean;
   isIterEnd?: boolean;
   onExpand: () => void;
 }) {
@@ -1163,29 +1144,18 @@ function CollapsedIterationCell(props: {
   return (
     <td
       className={
-        'h-[64px] min-w-[72px] cursor-pointer border-b border-r border-ink-200 px-1.5 py-1 align-middle text-center transition-colors ' +
+        'h-7 min-w-[28px] cursor-pointer border-b border-r border-ink-200 p-0 align-middle transition-colors ' +
         bg +
         (props.isIterEnd ? ' border-r-2 border-r-ink-300' : '')
       }
       onClick={props.onExpand}
       title="Iteration is collapsed. Click to expand."
-    >
-      <div className="flex flex-col items-center justify-center gap-0.5 text-ink-400">
-        <span className="inline-flex min-w-6 items-center justify-center gap-1 rounded-full border border-ink-200 bg-white/70 px-1.5 py-0.5 text-[11px] font-semibold tabular-nums text-ink-500">
-          {props.isDri && <span className="text-[9px] text-amber-500">★</span>}
-          {props.assignmentCount || '—'}
-        </span>
-        <span className="text-[8.5px] font-semibold uppercase tracking-[0.08em]">
-          Hidden
-        </span>
-      </div>
-    </td>
+    />
   );
 }
 
 function CollapsedNotesCell(props: {
   tone: IterationTone;
-  noteCount: number;
   topBorder?: boolean;
   onExpand: () => void;
 }) {
@@ -1199,17 +1169,13 @@ function CollapsedNotesCell(props: {
   return (
     <td
       className={
-        'h-[44px] min-w-[72px] cursor-pointer border-b border-r-2 border-r-ink-300 border-ink-200 px-1.5 py-1 align-middle text-center transition-colors ' +
+        'h-7 min-w-[28px] cursor-pointer border-b border-r-2 border-r-ink-300 border-ink-200 p-0 align-middle transition-colors ' +
         bg +
         (props.topBorder ? ' border-t-2' : '')
       }
       onClick={props.onExpand}
       title="Iteration notes are collapsed. Click to expand."
-    >
-      <span className="text-[10px] font-medium text-ink-400">
-        {props.noteCount ? `${props.noteCount} note${props.noteCount === 1 ? '' : 's'}` : 'Hidden'}
-      </span>
-    </td>
+    />
   );
 }
 
@@ -1464,60 +1430,91 @@ function ChartTransposed(props: {
                 </div>
               </div>
             );
+            const compactIterationControls = (
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => props.toggleIterationCollapsed(iter.id)}
+                  title={isCollapsed ? 'Expand iteration' : 'Collapse iteration'}
+                  aria-label={isCollapsed ? 'Expand iteration' : 'Collapse iteration'}
+                  className="inline-flex h-4 w-4 items-center justify-center rounded text-current opacity-60 transition hover:bg-white/50 hover:opacity-100"
+                >
+                  <Chevron open={!isCollapsed} />
+                </button>
+                <span>Iter {iterIdx + 1}</span>
+                {isCurrent && (
+                  <span
+                    className="rounded-full bg-amber-500 px-1.5 py-px text-[8px] font-bold uppercase tracking-[0.08em] text-white"
+                    title="Today is in this iteration"
+                  >
+                    Now
+                  </span>
+                )}
+                <label
+                  className="relative ml-0.5 inline-flex h-4 w-4 cursor-pointer items-center justify-center rounded text-current opacity-50 transition hover:bg-white/50 hover:opacity-100"
+                  title={`Set start date (currently ${iter.startDate})`}
+                >
+                  <svg width="11" height="11" viewBox="0 0 14 14" fill="none" aria-hidden>
+                    <rect x="2" y="3" width="10" height="9" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
+                    <path d="M2 6h10" stroke="currentColor" strokeWidth="1.3" />
+                    <path d="M5 2v2M9 2v2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+                  </svg>
+                  <input
+                    type="date"
+                    value={iter.startDate}
+                    onChange={e => {
+                      if (e.target.value) props.setIterationStart(iter.id, e.target.value);
+                    }}
+                    className="absolute inset-0 cursor-pointer opacity-0"
+                    aria-label="Iteration start date"
+                  />
+                </label>
+                <button
+                  onClick={() => {
+                    if (confirm('Remove this iteration (both weeks)?')) props.removeIteration(iter.id);
+                  }}
+                  title="Remove iteration"
+                  className="inline-flex h-4 w-4 items-center justify-center rounded text-current opacity-50 hover:bg-white/50 hover:opacity-100"
+                >
+                  ×
+                </button>
+              </div>
+            );
 
             if (isCollapsed) {
-              const weekIds = new Set(weeks.map(w => w.id));
-              const noteCount = weeks.filter(w => state.weekNotes?.[w.id]?.trim()).length;
               return (
                 <tr key={`${iter.id}:collapsed`} className="group/row">
                   <td
                     data-iter-id={iter.id}
                     style={{ left: 0, width: ITER_W, minWidth: ITER_W }}
                     className={
-                      'sticky z-10 border-b border-r border-ink-200 px-2 py-2 align-top text-[11px] font-semibold uppercase tracking-[0.06em] ' +
+                      'sticky z-10 border-b border-r border-ink-200 px-2 py-1 align-middle text-[11px] font-semibold uppercase tracking-[0.06em] ' +
                       iterBg
                     }
                   >
-                    {iterationControls}
+                    {compactIterationControls}
                   </td>
                   <td
                     style={{ left: ITER_W, width: WEEK_W, minWidth: WEEK_W }}
                     className={
-                      'sticky z-10 border-b border-r border-ink-200 px-2 py-2 align-middle text-center text-[10px] font-semibold uppercase tracking-[0.06em] ' +
+                      'sticky z-10 h-7 cursor-pointer border-b border-r border-ink-200 p-0 align-middle ' +
                       weekBg
                     }
+                    onClick={() => props.toggleIterationCollapsed(iter.id)}
+                    title="Expand iteration"
                   >
-                    <button
-                      type="button"
-                      onClick={() => props.toggleIterationCollapsed(iter.id)}
-                      className="rounded px-1.5 py-0.5 transition hover:bg-white/70"
-                      title="Expand iteration"
-                    >
-                      2 wk hidden
-                    </button>
                   </td>
-                  {state.people.map((person, colIdx) => {
-                    const collapsedAssigns = state.assignments.filter(
-                      a => a.personId === person.id && weekIds.has(a.weekId),
-                    );
-                    const isDri = collapsedAssigns.some(
-                      a => lookupProject(projectsById, a.projectId)?.driId === person.id,
-                    );
-                    return (
-                      <CollapsedIterationCell
-                        key={person.id}
-                        rowAlt={colIdx % 2 === 1}
-                        tone={tone}
-                        assignmentCount={collapsedAssigns.length}
-                        isDri={isDri}
-                        onExpand={() => props.toggleIterationCollapsed(iter.id)}
-                      />
-                    );
-                  })}
+                  {state.people.map((person, colIdx) => (
+                    <CollapsedIterationCell
+                      key={person.id}
+                      rowAlt={colIdx % 2 === 1}
+                      tone={tone}
+                      onExpand={() => props.toggleIterationCollapsed(iter.id)}
+                    />
+                  ))}
                   <td className={'border-b border-r border-ink-200 ' + (isCurrent ? 'bg-amber-50/40' : isPast ? 'bg-ink-50/70' : '')}></td>
                   <CollapsedNotesCell
                     tone={tone}
-                    noteCount={noteCount}
                     onExpand={() => props.toggleIterationCollapsed(iter.id)}
                   />
                 </tr>
