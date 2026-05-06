@@ -27,6 +27,7 @@ type State = {
 
 const PANEL_KEY = 'gantt-maker-panel-v1';
 const TRANSPOSED_KEY = 'gantt-maker-transposed-v1';
+const COLLAPSED_ITERATIONS_KEY = 'gantt-maker-collapsed-iterations-v1';
 
 /** Soft, characterful palette — paired bg + ink colors for legible chips. */
 const PALETTE = [
@@ -92,6 +93,48 @@ const weekLabel = (monday: Date) => {
     : `${m1} ${monday.getDate()}–${m2} ${fri.getDate()}`;
 };
 
+type IterationTone = 'past' | 'current' | 'future';
+
+const startOfToday = () => {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return today;
+};
+
+const iterationTone = (iter: Iteration, today: Date): IterationTone => {
+  const start = parseISODate(iter.startDate);
+  const end = addDays(start, 14);
+  if (today >= start && today < end) return 'current';
+  if (today >= end) return 'past';
+  return 'future';
+};
+
+const readCollapsedIterationIds = (slug: string): Set<ID> => {
+  try {
+    const raw = localStorage.getItem(COLLAPSED_ITERATIONS_KEY);
+    if (!raw) return new Set();
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return new Set();
+    const ids = (parsed as Record<string, unknown>)[slug];
+    if (!Array.isArray(ids)) return new Set();
+    return new Set(ids.filter((id): id is ID => typeof id === 'string'));
+  } catch {
+    return new Set();
+  }
+};
+
+const writeCollapsedIterationIds = (slug: string, ids: ID[]) => {
+  try {
+    const raw = localStorage.getItem(COLLAPSED_ITERATIONS_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : {};
+    const bySlug =
+      parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? parsed as Record<string, unknown>
+        : {};
+    localStorage.setItem(COLLAPSED_ITERATIONS_KEY, JSON.stringify({ ...bySlug, [slug]: ids }));
+  } catch {}
+};
+
 type WeekInfo = { id: string; label: string; iterationId: ID; index: 0 | 1 };
 const weeksOfIteration = (iter: Iteration): WeekInfo[] => {
   const start = parseISODate(iter.startDate);
@@ -137,15 +180,17 @@ export default function Plan({ slug }: { slug: string }) {
     );
   }
 
-  return <PlanView state={liveState} setState={setLiveState} conn={conn} peers={peers} />;
+  return <PlanView slug={slug} state={liveState} setState={setLiveState} conn={conn} peers={peers} />;
 }
 
 function PlanView({
+  slug,
   state,
   setState,
   conn,
   peers,
 }: {
+  slug: string;
   state: State;
   setState: (updater: (s: State) => State) => void;
   conn: ConnState;
@@ -163,16 +208,18 @@ function PlanView({
     () => state.iterations.flatMap(weeksOfIteration),
     [state.iterations],
   );
-  const currentIterationId = useMemo<ID | null>(() => {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    for (const it of state.iterations) {
-      const start = parseISODate(it.startDate);
-      const end = addDays(start, 14);
-      if (today >= start && today < end) return it.id;
+  const iterationToneById = useMemo(() => {
+    const today = startOfToday();
+    const tones: Record<ID, IterationTone> = {};
+    for (const iter of state.iterations) {
+      tones[iter.id] = iterationTone(iter, today);
     }
-    return null;
+    return tones;
   }, [state.iterations]);
+  const currentIterationId = useMemo<ID | null>(
+    () => state.iterations.find(iter => iterationToneById[iter.id] === 'current')?.id ?? null,
+    [iterationToneById, state.iterations],
+  );
   const plannedByProject = useMemo(() => {
     const map: Record<ID, number> = {};
     for (const a of state.assignments) {
@@ -299,6 +346,38 @@ function PlanView({
    * accessible by scrolling left. */
   const chartScrollRef = useRef<HTMLDivElement | null>(null);
   const lastScrolledIterRef = useRef<ID | null>(null);
+  const [collapsedIterationIds, setCollapsedIterationIds] = useState<Set<ID>>(
+    () => readCollapsedIterationIds(slug),
+  );
+
+  useEffect(() => {
+    const validIds = new Set(state.iterations.map(iter => iter.id));
+    setCollapsedIterationIds(prev => {
+      let changed = false;
+      const next = new Set<ID>();
+      for (const id of prev) {
+        if (validIds.has(id)) next.add(id);
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [state.iterations]);
+
+  useEffect(() => {
+    const validIds = new Set(state.iterations.map(iter => iter.id));
+    const ids = [...collapsedIterationIds].filter(id => validIds.has(id));
+    writeCollapsedIterationIds(slug, ids);
+  }, [slug, collapsedIterationIds, state.iterations]);
+
+  const toggleIterationCollapsed = (id: ID) => {
+    lastScrolledIterRef.current = null;
+    setCollapsedIterationIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   /* projects panel state */
   const [transposed, setTransposed] = useState<boolean>(() => {
@@ -334,7 +413,7 @@ function PlanView({
       scroller.scrollTo({ left: Math.max(0, left), behavior: 'smooth' });
     }
     lastScrolledIterRef.current = currentIterationId;
-  }, [currentIterationId, transposed]);
+  }, [collapsedIterationIds, currentIterationId, transposed]);
 
   const [panel, setPanel] = useState<{ collapsed: boolean; height: number }>(() => {
     try {
@@ -427,7 +506,10 @@ function PlanView({
               state={state}
               allWeeks={allWeeks}
               projectsById={projectsById}
+              collapsedIterationIds={collapsedIterationIds}
               currentIterationId={currentIterationId}
+              iterationToneById={iterationToneById}
+              toggleIterationCollapsed={toggleIterationCollapsed}
               renamePerson={renamePerson}
               removePerson={removePerson}
               addPerson={addPerson}
@@ -443,7 +525,10 @@ function PlanView({
               state={state}
               allWeeks={allWeeks}
               projectsById={projectsById}
+              collapsedIterationIds={collapsedIterationIds}
               currentIterationId={currentIterationId}
+              iterationToneById={iterationToneById}
+              toggleIterationCollapsed={toggleIterationCollapsed}
               renamePerson={renamePerson}
               removePerson={removePerson}
               addPerson={addPerson}
@@ -646,7 +731,10 @@ function Chart(props: {
   state: State;
   allWeeks: WeekInfo[];
   projectsById: Record<ID, Project>;
+  collapsedIterationIds: Set<ID>;
   currentIterationId: ID | null;
+  iterationToneById: Record<ID, IterationTone>;
+  toggleIterationCollapsed: (id: ID) => void;
   renamePerson: (id: ID, name: string) => void;
   removePerson: (id: ID) => void;
   addPerson: (name?: string) => void;
@@ -657,8 +745,33 @@ function Chart(props: {
   removeAssignment: (id: ID) => void;
   setWeekNote: (weekId: string, text: string) => void;
 }) {
-  const { state, allWeeks, projectsById, currentIterationId } = props;
+  const { state, allWeeks, projectsById } = props;
   const [picker, setPicker] = useState<{ personId: ID; weekId: string; rect: DOMRect } | null>(null);
+  const iterationRows = useMemo(
+    () => state.iterations.map((iter, idx) => ({
+      iter,
+      idx,
+      tone: props.iterationToneById[iter.id] ?? 'future',
+      isCollapsed: props.collapsedIterationIds.has(iter.id),
+      weeks: allWeeks.filter(w => w.iterationId === iter.id),
+    })),
+    [allWeeks, props.collapsedIterationIds, props.iterationToneById, state.iterations],
+  );
+  const visibleWeeks = useMemo(
+    () => iterationRows.flatMap(row => row.isCollapsed ? [] : row.weeks),
+    [iterationRows],
+  );
+  const visibleWeekIndexById = useMemo(() => {
+    const indexById: Record<string, number> = {};
+    visibleWeeks.forEach((week, idx) => {
+      indexById[week.id] = idx;
+    });
+    return indexById;
+  }, [visibleWeeks]);
+  const timelineColumnCount = iterationRows.reduce(
+    (count, row) => count + (row.isCollapsed ? 1 : row.weeks.length),
+    0,
+  );
 
   /* ------ Click-drag-to-extend ------
    * When the user grabs the right edge of a chip and drags right, we add
@@ -673,7 +786,7 @@ function Chart(props: {
   }>(null);
 
   const startExtend = (personId: ID, projectId: ID, weekId: string) => {
-    const fromIdx = allWeeks.findIndex(w => w.id === weekId);
+    const fromIdx = visibleWeeks.findIndex(w => w.id === weekId);
     if (fromIdx === -1) return;
     setExtending({ personId, projectId, fromIdx, toIdx: fromIdx });
 
@@ -683,7 +796,7 @@ function Chart(props: {
       ) as HTMLElement | null;
       if (!el) return;
       if (el.dataset.pid !== personId) return;
-      const idx = allWeeks.findIndex(w => w.id === el.dataset.wid);
+      const idx = visibleWeeks.findIndex(w => w.id === el.dataset.wid);
       if (idx < fromIdx) return; // only extend forward
       setExtending(prev => (prev && prev.toIdx !== idx ? { ...prev, toIdx: idx } : prev));
     };
@@ -693,7 +806,7 @@ function Chart(props: {
       setExtending(curr => {
         if (curr) {
           for (let i = curr.fromIdx + 1; i <= curr.toIdx; i++) {
-            const w = allWeeks[i];
+            const w = visibleWeeks[i];
             if (w) props.addAssignment(curr.personId, w.id, curr.projectId);
           }
         }
@@ -731,28 +844,42 @@ function Chart(props: {
                 </button>
               </div>
             </th>
-            {state.iterations.map((iter, idx) => {
-              const isCurrent = iter.id === currentIterationId;
+            {iterationRows.map(({ iter, idx, tone, isCollapsed }) => {
+              const isCurrent = tone === 'current';
+              const isPast = tone === 'past';
               return (
                 <th
                   key={iter.id}
                   data-iter-id={iter.id}
-                  colSpan={2}
+                  colSpan={isCollapsed ? 1 : 2}
                   className={
                     'sticky top-0 z-20 h-9 border-b-2 border-r-2 px-2 text-[11px] font-semibold uppercase tracking-[0.08em] ' +
                     (isCurrent
                       ? 'border-amber-500 border-r-amber-400/70 bg-amber-100 text-amber-800'
-                      : (idx % 2 === 0
-                          ? 'border-ink-200 border-r-ink-300 bg-brand-50 text-brand-700'
-                          : 'border-ink-200 border-r-ink-300 bg-indigo-50 text-indigo-700'))
+                      : isPast
+                        ? 'border-ink-200 border-r-ink-300 bg-ink-100 text-ink-500'
+                        : (idx % 2 === 0
+                            ? 'border-ink-200 border-r-ink-300 bg-brand-50 text-brand-700'
+                            : 'border-ink-200 border-r-ink-300 bg-indigo-50 text-indigo-700'))
                   }
                 >
                   <div className="flex items-center justify-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => props.toggleIterationCollapsed(iter.id)}
+                      title={isCollapsed ? 'Expand iteration' : 'Collapse iteration'}
+                      aria-label={isCollapsed ? 'Expand iteration' : 'Collapse iteration'}
+                      className="inline-flex h-4 w-4 items-center justify-center rounded text-current opacity-60 transition hover:bg-white/50 hover:opacity-100"
+                    >
+                      <Chevron open={!isCollapsed} />
+                    </button>
                     <span>Iteration</span>
                     <span
                       className={
                         'rounded px-1 py-px text-[10px] font-medium ' +
-                        (isCurrent ? 'bg-white/80 text-amber-700' : 'bg-white/60 text-ink-500')
+                        (isCurrent
+                          ? 'bg-white/80 text-amber-700'
+                          : isPast ? 'bg-white/70 text-ink-500' : 'bg-white/60 text-ink-500')
                       }
                     >
                       {idx + 1}
@@ -808,25 +935,52 @@ function Chart(props: {
           </tr>
           {/* Week row */}
           <tr>
-            {allWeeks.map((w, i) => {
-              const isCurrentWeek = w.iterationId === currentIterationId;
-              return (
-                <th
-                  key={w.id}
-                  className={
-                    'sticky top-9 z-20 h-8 min-w-[132px] border-b px-2 text-center text-[11px] font-medium tabular-nums ' +
-                    (isCurrentWeek
-                      ? 'border-amber-300 bg-amber-50 text-amber-800'
-                      : 'border-ink-200 bg-ink-50/70 text-ink-600') +
-                    ' border-r ' +
-                    (i % 2 === 1
-                      ? (isCurrentWeek ? 'border-r-2 border-r-amber-400/70' : 'border-r-2 border-r-ink-300')
-                      : (isCurrentWeek ? 'border-r-amber-200' : 'border-r-ink-200'))
-                  }
-                >
-                  {w.label}
-                </th>
-              );
+            {iterationRows.map(({ iter, tone, isCollapsed, weeks }) => {
+              const isCurrent = tone === 'current';
+              const isPast = tone === 'past';
+              const weekToneClass = isCurrent
+                ? 'border-amber-300 bg-amber-50 text-amber-800'
+                : isPast
+                  ? 'border-ink-200 bg-ink-50 text-ink-400'
+                  : 'border-ink-200 bg-ink-50/70 text-ink-600';
+              if (isCollapsed) {
+                return (
+                  <th
+                    key={`${iter.id}:collapsed`}
+                    className={
+                      'sticky top-9 z-20 h-8 min-w-[72px] border-b border-r-2 border-r-ink-300 px-2 text-center text-[10px] font-semibold uppercase tracking-[0.06em] ' +
+                      weekToneClass
+                    }
+                  >
+                    <button
+                      type="button"
+                      onClick={() => props.toggleIterationCollapsed(iter.id)}
+                      className="rounded px-1.5 py-0.5 transition hover:bg-white/70"
+                      title="Expand iteration"
+                    >
+                      2 wk hidden
+                    </button>
+                  </th>
+                );
+              }
+              return weeks.map((w, weekIdx) => {
+                const isIterEnd = weekIdx === weeks.length - 1;
+                return (
+                  <th
+                    key={w.id}
+                    className={
+                      'sticky top-9 z-20 h-8 min-w-[132px] border-b px-2 text-center text-[11px] font-medium tabular-nums ' +
+                      weekToneClass +
+                      ' border-r ' +
+                      (isIterEnd
+                        ? (isCurrent ? 'border-r-2 border-r-amber-400/70' : 'border-r-2 border-r-ink-300')
+                        : (isCurrent ? 'border-r-amber-200' : 'border-r-ink-200'))
+                    }
+                  >
+                    {w.label}
+                  </th>
+                );
+              });
             })}
           </tr>
         </thead>
@@ -857,41 +1011,64 @@ function Chart(props: {
                   </IconButton>
                 </div>
               </td>
-              {allWeeks.map((w, i) => {
-                const cellAssigns = state.assignments.filter(
-                  a => a.personId === person.id && a.weekId === w.id,
-                );
-                const isDri = cellAssigns.some(
-                  a => lookupProject(projectsById, a.projectId)?.driId === person.id,
-                );
-                const isCurrentWeek = w.iterationId === currentIterationId;
-                const inExtendPreview =
-                  !!extending &&
-                  extending.personId === person.id &&
-                  i > extending.fromIdx &&
-                  i <= extending.toIdx;
-                const extendPreviewProject = inExtendPreview
-                  ? lookupProject(projectsById, extending!.projectId)
-                  : undefined;
-                return (
-                  <Cell
-                    key={w.id}
-                    rowAlt={rowIdx % 2 === 1}
-                    personId={person.id}
-                    weekId={w.id}
-                    assignments={cellAssigns}
-                    projectsById={projectsById}
-                    isDri={isDri}
-                    isIterEnd={i % 2 === 1}
-                    isCurrentWeek={isCurrentWeek}
-                    extendPreviewProject={extendPreviewProject}
-                    onAdd={pid => props.addAssignment(person.id, w.id, pid)}
-                    onMove={aid => props.moveAssignment(aid, person.id, w.id)}
-                    onRemove={props.removeAssignment}
-                    onPick={rect => setPicker({ personId: person.id, weekId: w.id, rect })}
-                    onStartExtend={(projectId) => startExtend(person.id, projectId, w.id)}
-                  />
-                );
+              {iterationRows.map(({ iter, tone, isCollapsed, weeks }) => {
+                if (isCollapsed) {
+                  const weekIds = new Set(weeks.map(w => w.id));
+                  const collapsedAssigns = state.assignments.filter(
+                    a => a.personId === person.id && weekIds.has(a.weekId),
+                  );
+                  const isDri = collapsedAssigns.some(
+                    a => lookupProject(projectsById, a.projectId)?.driId === person.id,
+                  );
+                  return (
+                    <CollapsedIterationCell
+                      key={`${iter.id}:collapsed:${person.id}`}
+                      rowAlt={rowIdx % 2 === 1}
+                      tone={tone}
+                      assignmentCount={collapsedAssigns.length}
+                      isDri={isDri}
+                      isIterEnd
+                      onExpand={() => props.toggleIterationCollapsed(iter.id)}
+                    />
+                  );
+                }
+                return weeks.map((w, weekIdx) => {
+                  const cellAssigns = state.assignments.filter(
+                    a => a.personId === person.id && a.weekId === w.id,
+                  );
+                  const isDri = cellAssigns.some(
+                    a => lookupProject(projectsById, a.projectId)?.driId === person.id,
+                  );
+                  const visibleWeekIdx = visibleWeekIndexById[w.id] ?? -1;
+                  const inExtendPreview =
+                    !!extending &&
+                    extending.personId === person.id &&
+                    visibleWeekIdx > extending.fromIdx &&
+                    visibleWeekIdx <= extending.toIdx;
+                  const extendPreviewProject = inExtendPreview
+                    ? lookupProject(projectsById, extending!.projectId)
+                    : undefined;
+                  return (
+                    <Cell
+                      key={w.id}
+                      rowAlt={rowIdx % 2 === 1}
+                      personId={person.id}
+                      weekId={w.id}
+                      assignments={cellAssigns}
+                      projectsById={projectsById}
+                      isDri={isDri}
+                      isIterEnd={weekIdx === weeks.length - 1}
+                      isCurrentWeek={tone === 'current'}
+                      isPastWeek={tone === 'past'}
+                      extendPreviewProject={extendPreviewProject}
+                      onAdd={pid => props.addAssignment(person.id, w.id, pid)}
+                      onMove={aid => props.moveAssignment(aid, person.id, w.id)}
+                      onRemove={props.removeAssignment}
+                      onPick={rect => setPicker({ personId: person.id, weekId: w.id, rect })}
+                      onStartExtend={(projectId) => startExtend(person.id, projectId, w.id)}
+                    />
+                  );
+                });
               })}
             </tr>
           ))}
@@ -901,33 +1078,47 @@ function Chart(props: {
             >
               Notes
             </td>
-            {allWeeks.map((w, i) => {
-              const isCurrentWeek = w.iterationId === currentIterationId;
-              const note = state.weekNotes?.[w.id] ?? '';
-              return (
-                <td
-                  key={w.id}
-                  className={
-                    'h-[44px] min-w-[132px] border-t-2 border-b border-r border-ink-200 p-1 align-middle ' +
-                    (isCurrentWeek ? 'bg-amber-50/40' : 'bg-white') +
-                    (i % 2 === 1 ? ' border-r-2 border-r-ink-300' : '')
-                  }
-                >
-                  <input
-                    value={note}
-                    onChange={e => props.setWeekNote(w.id, e.target.value)}
-                    placeholder="Add note…"
-                    title={note || 'Add a note for this week'}
-                    className="block w-full rounded border border-transparent bg-transparent px-2 py-1 text-[12px] text-ink-700 outline-none transition placeholder:text-ink-300 hover:bg-white hover:shadow-sm focus:border-ink-300 focus:bg-white focus:ring-2 focus:ring-brand-200"
+            {iterationRows.map(({ iter, tone, isCollapsed, weeks }) => {
+              if (isCollapsed) {
+                const noteCount = weeks.filter(w => state.weekNotes?.[w.id]?.trim()).length;
+                return (
+                  <CollapsedNotesCell
+                    key={`${iter.id}:notes-collapsed`}
+                    tone={tone}
+                    noteCount={noteCount}
+                    topBorder
+                    onExpand={() => props.toggleIterationCollapsed(iter.id)}
                   />
-                </td>
-              );
+                );
+              }
+              return weeks.map((w, weekIdx) => {
+                const note = state.weekNotes?.[w.id] ?? '';
+                return (
+                  <td
+                    key={w.id}
+                    className={
+                      'h-[44px] min-w-[132px] border-t-2 border-b border-r border-ink-200 p-1 align-middle ' +
+                      (tone === 'current'
+                        ? 'bg-amber-50/40'
+                        : tone === 'past' ? 'bg-ink-50/70' : 'bg-white') +
+                      (weekIdx === weeks.length - 1 ? ' border-r-2 border-r-ink-300' : '')
+                    }
+                  >
+                    <WeekNoteTextarea
+                      value={note}
+                      onChange={text => props.setWeekNote(w.id, text)}
+                      title={note || 'Add a note for this week'}
+                      muted={tone === 'past'}
+                    />
+                  </td>
+                );
+              });
             })}
           </tr>
           {state.people.length === 0 && (
             <tr>
               <td
-                colSpan={Math.max(1, 1 + allWeeks.length)}
+                colSpan={Math.max(1, 1 + timelineColumnCount)}
                 className="px-6 py-10 text-center text-[13px] text-ink-500"
               >
                 Add a person above to get started.
@@ -952,6 +1143,99 @@ function Chart(props: {
   );
 }
 
+function CollapsedIterationCell(props: {
+  rowAlt: boolean;
+  tone: IterationTone;
+  assignmentCount: number;
+  isDri: boolean;
+  isIterEnd?: boolean;
+  onExpand: () => void;
+}) {
+  const bg =
+    props.tone === 'current'
+      ? (props.rowAlt ? 'bg-amber-50/60 hover:bg-amber-50' : 'bg-amber-50/40 hover:bg-amber-50')
+      : props.tone === 'past'
+        ? (props.rowAlt ? 'bg-ink-100/70 hover:bg-ink-100' : 'bg-ink-50/80 hover:bg-ink-100')
+        : props.rowAlt
+          ? 'bg-ink-50/40 hover:bg-brand-50/40'
+          : 'bg-white hover:bg-brand-50/40';
+
+  return (
+    <td
+      className={
+        'h-[64px] min-w-[72px] cursor-pointer border-b border-r border-ink-200 px-1.5 py-1 align-middle text-center transition-colors ' +
+        bg +
+        (props.isIterEnd ? ' border-r-2 border-r-ink-300' : '')
+      }
+      onClick={props.onExpand}
+      title="Iteration is collapsed. Click to expand."
+    >
+      <div className="flex flex-col items-center justify-center gap-0.5 text-ink-400">
+        <span className="inline-flex min-w-6 items-center justify-center gap-1 rounded-full border border-ink-200 bg-white/70 px-1.5 py-0.5 text-[11px] font-semibold tabular-nums text-ink-500">
+          {props.isDri && <span className="text-[9px] text-amber-500">★</span>}
+          {props.assignmentCount || '—'}
+        </span>
+        <span className="text-[8.5px] font-semibold uppercase tracking-[0.08em]">
+          Hidden
+        </span>
+      </div>
+    </td>
+  );
+}
+
+function CollapsedNotesCell(props: {
+  tone: IterationTone;
+  noteCount: number;
+  topBorder?: boolean;
+  onExpand: () => void;
+}) {
+  const bg =
+    props.tone === 'current'
+      ? 'bg-amber-50/40 hover:bg-amber-50'
+      : props.tone === 'past'
+        ? 'bg-ink-50/70 hover:bg-ink-100'
+        : 'bg-white hover:bg-brand-50/40';
+
+  return (
+    <td
+      className={
+        'h-[44px] min-w-[72px] cursor-pointer border-b border-r-2 border-r-ink-300 border-ink-200 px-1.5 py-1 align-middle text-center transition-colors ' +
+        bg +
+        (props.topBorder ? ' border-t-2' : '')
+      }
+      onClick={props.onExpand}
+      title="Iteration notes are collapsed. Click to expand."
+    >
+      <span className="text-[10px] font-medium text-ink-400">
+        {props.noteCount ? `${props.noteCount} note${props.noteCount === 1 ? '' : 's'}` : 'Hidden'}
+      </span>
+    </td>
+  );
+}
+
+function WeekNoteTextarea(props: {
+  value: string;
+  onChange: (text: string) => void;
+  title?: string;
+  compact?: boolean;
+  muted?: boolean;
+}) {
+  return (
+    <textarea
+      value={props.value}
+      onChange={e => props.onChange(e.target.value)}
+      placeholder="Add note…"
+      title={props.title}
+      rows={props.compact ? 2 : 3}
+      className={
+        'block w-full resize-y rounded border border-transparent bg-transparent px-2 py-1.5 text-[12px] leading-snug outline-none transition placeholder:text-ink-300 hover:bg-white hover:shadow-sm focus:border-ink-300 focus:bg-white focus:ring-2 focus:ring-brand-200 ' +
+        (props.compact ? 'min-h-[56px] ' : 'min-h-[72px] ') +
+        (props.muted ? 'text-ink-500' : 'text-ink-700')
+      }
+    />
+  );
+}
+
 /* ============================================================ */
 /* ChartTransposed — weeks as rows, people as columns           */
 /* ============================================================ */
@@ -960,7 +1244,10 @@ function ChartTransposed(props: {
   state: State;
   allWeeks: WeekInfo[];
   projectsById: Record<ID, Project>;
+  collapsedIterationIds: Set<ID>;
   currentIterationId: ID | null;
+  iterationToneById: Record<ID, IterationTone>;
+  toggleIterationCollapsed: (id: ID) => void;
   renamePerson: (id: ID, name: string) => void;
   removePerson: (id: ID) => void;
   addPerson: (name?: string) => void;
@@ -971,8 +1258,29 @@ function ChartTransposed(props: {
   removeAssignment: (id: ID) => void;
   setWeekNote: (weekId: string, text: string) => void;
 }) {
-  const { state, allWeeks, projectsById, currentIterationId } = props;
+  const { state, allWeeks, projectsById } = props;
   const [picker, setPicker] = useState<{ personId: ID; weekId: string; rect: DOMRect } | null>(null);
+  const iterationRows = useMemo(
+    () => state.iterations.map((iter, idx) => ({
+      iter,
+      idx,
+      tone: props.iterationToneById[iter.id] ?? 'future',
+      isCollapsed: props.collapsedIterationIds.has(iter.id),
+      weeks: allWeeks.filter(w => w.iterationId === iter.id),
+    })),
+    [allWeeks, props.collapsedIterationIds, props.iterationToneById, state.iterations],
+  );
+  const visibleWeeks = useMemo(
+    () => iterationRows.flatMap(row => row.isCollapsed ? [] : row.weeks),
+    [iterationRows],
+  );
+  const visibleWeekIndexById = useMemo(() => {
+    const indexById: Record<string, number> = {};
+    visibleWeeks.forEach((week, idx) => {
+      indexById[week.id] = idx;
+    });
+    return indexById;
+  }, [visibleWeeks]);
   const [extending, setExtending] = useState<null | {
     personId: ID;
     projectId: ID;
@@ -981,7 +1289,7 @@ function ChartTransposed(props: {
   }>(null);
 
   const startExtend = (personId: ID, projectId: ID, weekId: string) => {
-    const fromIdx = allWeeks.findIndex(w => w.id === weekId);
+    const fromIdx = visibleWeeks.findIndex(w => w.id === weekId);
     if (fromIdx === -1) return;
     setExtending({ personId, projectId, fromIdx, toIdx: fromIdx });
     const onMove = (e: MouseEvent) => {
@@ -990,7 +1298,7 @@ function ChartTransposed(props: {
       ) as HTMLElement | null;
       if (!el) return;
       if (el.dataset.pid !== personId) return;
-      const idx = allWeeks.findIndex(w => w.id === el.dataset.wid);
+      const idx = visibleWeeks.findIndex(w => w.id === el.dataset.wid);
       if (idx < fromIdx) return;
       setExtending(prev => (prev && prev.toIdx !== idx ? { ...prev, toIdx: idx } : prev));
     };
@@ -1000,7 +1308,7 @@ function ChartTransposed(props: {
       setExtending(curr => {
         if (curr) {
           for (let i = curr.fromIdx + 1; i <= curr.toIdx; i++) {
-            const w = allWeeks[i];
+            const w = visibleWeeks[i];
             if (w) props.addAssignment(curr.personId, w.id, curr.projectId);
           }
         }
@@ -1091,14 +1399,133 @@ function ChartTransposed(props: {
               </td>
             </tr>
           )}
-          {state.iterations.map((iter, iterIdx) => {
-            const isCurrent = iter.id === currentIterationId;
-            const weeks = allWeeks.filter(w => w.iterationId === iter.id);
+          {iterationRows.map(({ iter, idx: iterIdx, tone, isCollapsed, weeks }) => {
+            const isCurrent = tone === 'current';
+            const isPast = tone === 'past';
             const iterBg = isCurrent
               ? 'bg-amber-100 text-amber-800'
-              : (iterIdx % 2 === 0 ? 'bg-brand-50 text-brand-700' : 'bg-indigo-50 text-indigo-700');
+              : isPast
+                ? 'bg-ink-100 text-ink-500'
+                : (iterIdx % 2 === 0 ? 'bg-brand-50 text-brand-700' : 'bg-indigo-50 text-indigo-700');
+            const weekBg = isCurrent
+              ? 'bg-amber-50 text-amber-800'
+              : isPast ? 'bg-ink-50 text-ink-400' : 'bg-ink-50/70 text-ink-600';
+            const iterationControls = (
+              <div className="flex flex-col items-start gap-1">
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => props.toggleIterationCollapsed(iter.id)}
+                    title={isCollapsed ? 'Expand iteration' : 'Collapse iteration'}
+                    aria-label={isCollapsed ? 'Expand iteration' : 'Collapse iteration'}
+                    className="inline-flex h-4 w-4 items-center justify-center rounded text-current opacity-60 transition hover:bg-white/50 hover:opacity-100"
+                  >
+                    <Chevron open={!isCollapsed} />
+                  </button>
+                  <span>Iter {iterIdx + 1}</span>
+                  {isCurrent && (
+                    <span
+                      className="rounded-full bg-amber-500 px-1.5 py-px text-[8px] font-bold uppercase tracking-[0.08em] text-white"
+                      title="Today is in this iteration"
+                    >
+                      Now
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-0.5">
+                  <label
+                    className="relative inline-flex h-4 w-4 cursor-pointer items-center justify-center rounded text-current opacity-50 transition hover:bg-white/50 hover:opacity-100"
+                    title={`Set start date (currently ${iter.startDate})`}
+                  >
+                    <svg width="11" height="11" viewBox="0 0 14 14" fill="none" aria-hidden>
+                      <rect x="2" y="3" width="10" height="9" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
+                      <path d="M2 6h10" stroke="currentColor" strokeWidth="1.3" />
+                      <path d="M5 2v2M9 2v2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+                    </svg>
+                    <input
+                      type="date"
+                      value={iter.startDate}
+                      onChange={e => {
+                        if (e.target.value) props.setIterationStart(iter.id, e.target.value);
+                      }}
+                      className="absolute inset-0 cursor-pointer opacity-0"
+                      aria-label="Iteration start date"
+                    />
+                  </label>
+                  <button
+                    onClick={() => {
+                      if (confirm('Remove this iteration (both weeks)?')) props.removeIteration(iter.id);
+                    }}
+                    title="Remove iteration"
+                    className="inline-flex h-4 w-4 items-center justify-center rounded text-current opacity-50 hover:bg-white/50 hover:opacity-100"
+                  >
+                    ×
+                  </button>
+                </div>
+              </div>
+            );
+
+            if (isCollapsed) {
+              const weekIds = new Set(weeks.map(w => w.id));
+              const noteCount = weeks.filter(w => state.weekNotes?.[w.id]?.trim()).length;
+              return (
+                <tr key={`${iter.id}:collapsed`} className="group/row">
+                  <td
+                    data-iter-id={iter.id}
+                    style={{ left: 0, width: ITER_W, minWidth: ITER_W }}
+                    className={
+                      'sticky z-10 border-b border-r border-ink-200 px-2 py-2 align-top text-[11px] font-semibold uppercase tracking-[0.06em] ' +
+                      iterBg
+                    }
+                  >
+                    {iterationControls}
+                  </td>
+                  <td
+                    style={{ left: ITER_W, width: WEEK_W, minWidth: WEEK_W }}
+                    className={
+                      'sticky z-10 border-b border-r border-ink-200 px-2 py-2 align-middle text-center text-[10px] font-semibold uppercase tracking-[0.06em] ' +
+                      weekBg
+                    }
+                  >
+                    <button
+                      type="button"
+                      onClick={() => props.toggleIterationCollapsed(iter.id)}
+                      className="rounded px-1.5 py-0.5 transition hover:bg-white/70"
+                      title="Expand iteration"
+                    >
+                      2 wk hidden
+                    </button>
+                  </td>
+                  {state.people.map((person, colIdx) => {
+                    const collapsedAssigns = state.assignments.filter(
+                      a => a.personId === person.id && weekIds.has(a.weekId),
+                    );
+                    const isDri = collapsedAssigns.some(
+                      a => lookupProject(projectsById, a.projectId)?.driId === person.id,
+                    );
+                    return (
+                      <CollapsedIterationCell
+                        key={person.id}
+                        rowAlt={colIdx % 2 === 1}
+                        tone={tone}
+                        assignmentCount={collapsedAssigns.length}
+                        isDri={isDri}
+                        onExpand={() => props.toggleIterationCollapsed(iter.id)}
+                      />
+                    );
+                  })}
+                  <td className={'border-b border-r border-ink-200 ' + (isCurrent ? 'bg-amber-50/40' : isPast ? 'bg-ink-50/70' : '')}></td>
+                  <CollapsedNotesCell
+                    tone={tone}
+                    noteCount={noteCount}
+                    onExpand={() => props.toggleIterationCollapsed(iter.id)}
+                  />
+                </tr>
+              );
+            }
+
             return weeks.map((w, weekIdx) => {
-              const globalWeekIdx = allWeeks.findIndex(x => x.id === w.id);
+              const visibleWeekIdx = visibleWeekIndexById[w.id] ?? -1;
               return (
                 <tr key={w.id} className="group/row">
                   {weekIdx === 0 && (
@@ -1111,56 +1538,14 @@ function ChartTransposed(props: {
                         iterBg
                       }
                     >
-                      <div className="flex flex-col items-start gap-1">
-                        <div className="flex items-center gap-1">
-                          <span>Iter {iterIdx + 1}</span>
-                          {isCurrent && (
-                            <span
-                              className="rounded-full bg-amber-500 px-1.5 py-px text-[8px] font-bold uppercase tracking-[0.08em] text-white"
-                              title="Today is in this iteration"
-                            >
-                              Now
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-0.5">
-                          <label
-                            className="relative inline-flex h-4 w-4 cursor-pointer items-center justify-center rounded text-current opacity-50 transition hover:bg-white/50 hover:opacity-100"
-                            title={`Set start date (currently ${iter.startDate})`}
-                          >
-                            <svg width="11" height="11" viewBox="0 0 14 14" fill="none" aria-hidden>
-                              <rect x="2" y="3" width="10" height="9" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
-                              <path d="M2 6h10" stroke="currentColor" strokeWidth="1.3" />
-                              <path d="M5 2v2M9 2v2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-                            </svg>
-                            <input
-                              type="date"
-                              value={iter.startDate}
-                              onChange={e => {
-                                if (e.target.value) props.setIterationStart(iter.id, e.target.value);
-                              }}
-                              className="absolute inset-0 cursor-pointer opacity-0"
-                              aria-label="Iteration start date"
-                            />
-                          </label>
-                          <button
-                            onClick={() => {
-                              if (confirm('Remove this iteration (both weeks)?')) props.removeIteration(iter.id);
-                            }}
-                            title="Remove iteration"
-                            className="inline-flex h-4 w-4 items-center justify-center rounded text-current opacity-50 hover:bg-white/50 hover:opacity-100"
-                          >
-                            ×
-                          </button>
-                        </div>
-                      </div>
+                      {iterationControls}
                     </td>
                   )}
                   <td
                     style={{ left: ITER_W, width: WEEK_W, minWidth: WEEK_W }}
                     className={
                       'sticky z-10 border-b border-r border-ink-200 px-2 py-2 align-middle text-[11px] font-medium tabular-nums ' +
-                      (isCurrent ? 'bg-amber-50 text-amber-800' : 'bg-ink-50/70 text-ink-600')
+                      weekBg
                     }
                   >
                     {w.label}
@@ -1175,8 +1560,8 @@ function ChartTransposed(props: {
                     const inExtendPreview =
                       !!extending &&
                       extending.personId === person.id &&
-                      globalWeekIdx > extending.fromIdx &&
-                      globalWeekIdx <= extending.toIdx;
+                      visibleWeekIdx > extending.fromIdx &&
+                      visibleWeekIdx <= extending.toIdx;
                     const extendPreviewProject = inExtendPreview
                       ? lookupProject(projectsById, extending!.projectId)
                       : undefined;
@@ -1191,6 +1576,7 @@ function ChartTransposed(props: {
                         isDri={isDri}
                         isIterEnd={false}
                         isCurrentWeek={isCurrent}
+                        isPastWeek={isPast}
                         extendPreviewProject={extendPreviewProject}
                         onAdd={pid => props.addAssignment(person.id, w.id, pid)}
                         onMove={aid => props.moveAssignment(aid, person.id, w.id)}
@@ -1201,19 +1587,20 @@ function ChartTransposed(props: {
                     );
                   })}
                   {/* + Person spacer cell to match header */}
-                  <td className={'border-b border-r border-ink-200 ' + (isCurrent ? 'bg-amber-50/40' : '')}></td>
+                  <td className={'border-b border-r border-ink-200 ' + (isCurrent ? 'bg-amber-50/40' : isPast ? 'bg-ink-50/70' : '')}></td>
                   {/* Notes col */}
                   <td
                     className={
                       'border-b border-l border-ink-200 p-1 align-middle ' +
-                      (isCurrent ? 'bg-amber-50/40' : 'bg-white')
+                      (isCurrent ? 'bg-amber-50/40' : isPast ? 'bg-ink-50/70' : 'bg-white')
                     }
                   >
-                    <input
+                    <WeekNoteTextarea
                       value={state.weekNotes?.[w.id] ?? ''}
-                      onChange={e => props.setWeekNote(w.id, e.target.value)}
-                      placeholder="Add note…"
-                      className="block w-full rounded border border-transparent bg-transparent px-2 py-1 text-[12px] text-ink-700 outline-none transition placeholder:text-ink-300 hover:bg-white hover:shadow-sm focus:border-ink-300 focus:bg-white focus:ring-2 focus:ring-brand-200"
+                      onChange={text => props.setWeekNote(w.id, text)}
+                      title={state.weekNotes?.[w.id] || 'Add a note for this week'}
+                      compact
+                      muted={isPast}
                     />
                   </td>
                 </tr>
@@ -1246,6 +1633,7 @@ function Cell(props: {
   isDri: boolean;
   isIterEnd: boolean;
   isCurrentWeek: boolean;
+  isPastWeek: boolean;
   rowAlt: boolean;
   extendPreviewProject?: Project;
   onAdd: (projectId: ID) => void;
@@ -1278,6 +1666,8 @@ function Cell(props: {
 
   const baseBg = props.isCurrentWeek
     ? (props.rowAlt ? 'bg-amber-50/60 hover:bg-amber-50' : 'bg-amber-50/40 hover:bg-amber-50')
+    : props.isPastWeek
+    ? (props.rowAlt ? 'bg-ink-100/70 hover:bg-ink-100' : 'bg-ink-50/80 hover:bg-ink-100')
     : props.rowAlt
     ? 'bg-ink-50/40 hover:bg-brand-50/40'
     : 'bg-white hover:bg-brand-50/40';
@@ -1301,7 +1691,7 @@ function Cell(props: {
       onClick={() => cellRef.current && props.onPick(cellRef.current.getBoundingClientRect())}
       title="Click to add a project, or drag one in"
     >
-      <div className="flex h-full flex-col items-center justify-center gap-1">
+      <div className="flex min-h-[56px] flex-col items-center justify-center gap-1">
         {props.assignments.length === 0 && !props.extendPreviewProject && (
           <span
             className={
@@ -1340,6 +1730,7 @@ function Cell(props: {
               project={proj}
               isPto={isPto(a.projectId)}
               isOwnDri={proj.driId === props.personId}
+              muted={props.isPastWeek}
               onDragStart={e => {
                 e.dataTransfer.setData('application/x-assignment', a.id);
                 e.dataTransfer.effectAllowed = 'move';
@@ -1362,6 +1753,7 @@ function AssignChip(props: {
   project: Project;
   isPto?: boolean;
   isOwnDri: boolean;
+  muted?: boolean;
   onDragStart: (e: React.DragEvent) => void;
   onClick: (e: React.MouseEvent) => void;
   onRemove: () => void;
@@ -1370,7 +1762,11 @@ function AssignChip(props: {
   const { project, isOwnDri, isPto: pto } = props;
   const ink = pto ? '#475569' : inkFor(project.color);
   const baseClass =
-    'group/chip relative inline-flex max-w-full cursor-grab items-center gap-1 rounded-full px-2.5 py-[3px] pr-3 text-[11px] font-semibold leading-none transition-transform active:cursor-grabbing hover:-translate-y-px';
+    'group/chip relative inline-flex max-w-full min-w-0 cursor-grab items-center gap-1 rounded-full px-2.5 py-[3px] pr-3 text-left text-[11px] font-semibold leading-tight transition-transform active:cursor-grabbing hover:-translate-y-px';
+  const chipStyle = pto ? { color: ink } : { background: project.color, color: ink };
+  const mutedStyle = props.muted
+    ? { ...chipStyle, filter: 'saturate(0.55)', opacity: 0.72 }
+    : chipStyle;
   return (
     <span
       draggable
@@ -1391,29 +1787,31 @@ function AssignChip(props: {
           : 'border border-black/[0.06] shadow-[inset_0_1px_0_rgba(255,255,255,0.5),0_1px_1px_rgba(15,23,42,0.05)]') +
         (project.url && !pto ? ' cursor-pointer' : '')
       }
-      style={pto ? { color: ink } : { background: project.color, color: ink }}
+      style={mutedStyle}
     >
       {pto ? (
-        <span className="inline-flex h-3.5 w-3.5 items-center justify-center text-[10px]" aria-hidden>
+        <span className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center text-[10px]" aria-hidden>
           ☀
         </span>
       ) : (
         isOwnDri && (
           <span
-            className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-white/70 text-[8px] font-bold"
+            className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full bg-white/70 text-[8px] font-bold"
             title="DRI"
           >
             ★
           </span>
         )
       )}
-      <span className="max-w-[110px] truncate">{project.name}</span>
+      <span className="min-w-0 whitespace-normal break-words leading-tight">
+        {project.name}
+      </span>
       <span
         onClick={e => {
           e.stopPropagation();
           props.onRemove();
         }}
-        className="ml-0.5 inline-flex h-3.5 w-3.5 items-center justify-center rounded-full text-[10px] font-bold opacity-0 transition group-hover/chip:opacity-60 hover:!opacity-100 hover:bg-black/15"
+        className="ml-0.5 inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold opacity-0 transition group-hover/chip:opacity-60 hover:!opacity-100 hover:bg-black/15"
       >
         ×
       </span>
