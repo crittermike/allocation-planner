@@ -146,6 +146,46 @@ const weeksOfIteration = (iter: Iteration): WeekInfo[] => {
   }));
 };
 
+const iterationDateRange = (iter: Iteration): string => {
+  const start = parseISODate(iter.startDate);
+  const end = addDays(start, 11); // Friday of 2nd week
+  const m1 = start.toLocaleString('en-US', { month: 'short' });
+  const m2 = end.toLocaleString('en-US', { month: 'short' });
+  return m1 === m2
+    ? `${m1} ${start.getDate()}–${end.getDate()}`
+    : `${m1} ${start.getDate()}–${m2} ${end.getDate()}`;
+};
+
+type CollapsedAssignmentSummary = { projectId: ID; weeks: number };
+
+const summarizeIterationAssignments = (
+  assignments: Assignment[],
+  personId: ID,
+  iterationId: ID,
+): CollapsedAssignmentSummary[] => {
+  const counts = new Map<ID, number>();
+  const prefix = `${iterationId}:`;
+  for (const a of assignments) {
+    if (a.personId !== personId) continue;
+    if (!a.weekId.startsWith(prefix)) continue;
+    counts.set(a.projectId, (counts.get(a.projectId) ?? 0) + 1);
+  }
+  return Array.from(counts.entries()).map(([projectId, weeks]) => ({ projectId, weeks }));
+};
+
+const collectIterationNotes = (
+  weekNotes: Record<string, string> | undefined,
+  weeks: WeekInfo[],
+): string[] => {
+  if (!weekNotes) return [];
+  const out: string[] = [];
+  for (const w of weeks) {
+    const t = (weekNotes[w.id] ?? '').trim();
+    if (t) out.push(t);
+  }
+  return out;
+};
+
 /* ---------- seed ---------- */
 
 /* ============================================================ */
@@ -948,12 +988,13 @@ function Chart(props: {
                   <th
                     key={`${iter.id}:collapsed`}
                     className={
-                      'sticky top-9 z-20 h-6 min-w-[28px] cursor-pointer border-b border-r-2 border-r-ink-300 px-0 ' +
+                      'sticky top-9 z-20 h-6 min-w-[120px] cursor-pointer border-b border-r-2 border-r-ink-300 px-2 text-[10.5px] font-medium tabular-nums ' +
                       weekToneClass
                     }
                     onClick={() => props.toggleIterationCollapsed(iter.id)}
-                    title="Expand iteration"
+                    title={`Expand iteration (${iterationDateRange(iter)})`}
                   >
+                    <span className="opacity-80">{iterationDateRange(iter)}</span>
                   </th>
                 );
               }
@@ -1014,6 +1055,9 @@ function Chart(props: {
                       tone={tone}
                       isIterEnd
                       onExpand={() => props.toggleIterationCollapsed(iter.id)}
+                      assignments={summarizeIterationAssignments(state.assignments, person.id, iter.id)}
+                      projectsById={projectsById}
+                      personName={person.name}
                     />
                   );
                 }
@@ -1071,6 +1115,7 @@ function Chart(props: {
                     tone={tone}
                     topBorder
                     onExpand={() => props.toggleIterationCollapsed(iter.id)}
+                    notes={collectIterationNotes(state.weekNotes, weeks)}
                   />
                 );
               }
@@ -1131,26 +1176,87 @@ function CollapsedIterationCell(props: {
   tone: IterationTone;
   isIterEnd?: boolean;
   onExpand: () => void;
+  assignments: CollapsedAssignmentSummary[];
+  projectsById: Record<ID, Project>;
+  personName?: string;
 }) {
   const bg =
     props.tone === 'current'
-      ? (props.rowAlt ? 'bg-amber-50/60 hover:bg-amber-50' : 'bg-amber-50/40 hover:bg-amber-50')
+      ? (props.rowAlt ? 'bg-amber-50/60 hover:bg-amber-100' : 'bg-amber-50/40 hover:bg-amber-100')
       : props.tone === 'past'
         ? (props.rowAlt ? 'bg-ink-100/70 hover:bg-ink-100' : 'bg-ink-50/80 hover:bg-ink-100')
         : props.rowAlt
-          ? 'bg-ink-50/40 hover:bg-brand-50/40'
-          : 'bg-white hover:bg-brand-50/40';
+          ? 'bg-ink-50/60 hover:bg-brand-50/60'
+          : 'bg-ink-50/30 hover:bg-brand-50/60';
+  const summary = props.assignments;
+  const totalWeeks = summary.reduce((acc, s) => acc + s.weeks, 0);
+  const tooltipLines = summary
+    .map(s => {
+      const project = lookupProject(props.projectsById, s.projectId);
+      const name = project?.name ?? 'Unknown';
+      return `${name} · ${s.weeks} ${s.weeks === 1 ? 'wk' : 'wks'}`;
+    });
+  const tooltip =
+    summary.length === 0
+      ? 'Iteration is collapsed. Click to expand.'
+      : `${props.personName ? props.personName + ': ' : ''}${tooltipLines.join('\n')}\n(Click to expand)`;
 
   return (
     <td
       className={
-        'h-7 min-w-[28px] cursor-pointer border-b border-r border-ink-200 p-0 align-middle transition-colors ' +
+        'group/collapsed relative h-7 min-w-[28px] cursor-pointer border-b border-r border-ink-200 p-0 align-middle transition-colors ' +
         bg +
         (props.isIterEnd ? ' border-r-2 border-r-ink-300' : '')
       }
       onClick={props.onExpand}
-      title="Iteration is collapsed. Click to expand."
-    />
+      title={tooltip}
+    >
+      <div
+        className="pointer-events-none absolute inset-0 opacity-50"
+        style={{
+          backgroundImage:
+            'repeating-linear-gradient(135deg, transparent 0 6px, rgba(15,23,42,0.04) 6px 7px)',
+        }}
+        aria-hidden
+      />
+      <div className="relative flex h-full w-full items-center justify-center gap-1 px-2 py-1">
+        {summary.length === 0 && (
+          <span
+            className="inline-block h-1 w-6 rounded-full bg-ink-300/60 transition group-hover/collapsed:bg-ink-400/80"
+            aria-hidden
+          />
+        )}
+        {summary.map(s => {
+          const project = lookupProject(props.projectsById, s.projectId);
+          if (!project) return null;
+          const pto = isPto(s.projectId);
+          const widthPx = Math.max(10, s.weeks * 14);
+          return (
+            <span
+              key={s.projectId}
+              className={
+                'inline-block h-2.5 rounded-full ' +
+                (pto
+                  ? 'border border-dashed border-ink-400/70'
+                  : 'border border-black/10 shadow-[inset_0_1px_0_rgba(255,255,255,0.45)]')
+              }
+              style={{
+                width: `${widthPx}px`,
+                background: pto
+                  ? 'repeating-linear-gradient(135deg,#f1f5f9 0 4px,#cbd5e1 4px 8px)'
+                  : project.color,
+              }}
+              aria-hidden
+            />
+          );
+        })}
+        {summary.length > 0 && totalWeeks > 0 && (
+          <span className="sr-only">
+            {summary.length} {summary.length === 1 ? 'project' : 'projects'} hidden
+          </span>
+        )}
+      </div>
+    </td>
   );
 }
 
@@ -1158,24 +1264,62 @@ function CollapsedNotesCell(props: {
   tone: IterationTone;
   topBorder?: boolean;
   onExpand: () => void;
+  notes: string[];
 }) {
   const bg =
     props.tone === 'current'
-      ? 'bg-amber-50/40 hover:bg-amber-50'
+      ? 'bg-amber-50/40 hover:bg-amber-100'
       : props.tone === 'past'
         ? 'bg-ink-50/70 hover:bg-ink-100'
-        : 'bg-white hover:bg-brand-50/40';
+        : 'bg-ink-50/30 hover:bg-brand-50/60';
+  const hasNotes = props.notes.length > 0;
+  const preview = hasNotes ? props.notes.join(' · ') : '';
+  const tooltip = hasNotes
+    ? `${props.notes.join('\n— — —\n')}\n\n(Click to expand)`
+    : 'Iteration notes are collapsed. Click to expand.';
 
   return (
     <td
       className={
-        'h-7 min-w-[28px] cursor-pointer border-b border-r-2 border-r-ink-300 border-ink-200 p-0 align-middle transition-colors ' +
+        'group/collapsed relative h-7 min-w-[28px] cursor-pointer border-b border-r-2 border-r-ink-300 border-ink-200 p-0 align-middle transition-colors ' +
         bg +
         (props.topBorder ? ' border-t-2' : '')
       }
       onClick={props.onExpand}
-      title="Iteration notes are collapsed. Click to expand."
-    />
+      title={tooltip}
+    >
+      <div
+        className="pointer-events-none absolute inset-0 opacity-50"
+        style={{
+          backgroundImage:
+            'repeating-linear-gradient(135deg, transparent 0 6px, rgba(15,23,42,0.04) 6px 7px)',
+        }}
+        aria-hidden
+      />
+      <div className="relative flex h-full w-full items-center gap-1.5 px-2.5">
+        {hasNotes ? (
+          <>
+            <svg width="10" height="10" viewBox="0 0 12 12" className="shrink-0 text-ink-400" aria-hidden>
+              <path
+                d="M2 2.5a.5.5 0 0 1 .5-.5h7a.5.5 0 0 1 .5.5v7a.5.5 0 0 1-.5.5h-7a.5.5 0 0 1-.5-.5v-7Z"
+                stroke="currentColor"
+                strokeWidth="1"
+                fill="none"
+              />
+              <path d="M3.5 4.5h5M3.5 6h5M3.5 7.5h3" stroke="currentColor" strokeWidth="1" strokeLinecap="round" />
+            </svg>
+            <span className="min-w-0 flex-1 truncate text-[11px] leading-tight text-ink-500">
+              {preview}
+            </span>
+          </>
+        ) : (
+          <span
+            className="inline-block h-1 w-6 rounded-full bg-ink-300/60 transition group-hover/collapsed:bg-ink-400/80"
+            aria-hidden
+          />
+        )}
+      </div>
+    </td>
   );
 }
 
@@ -1497,12 +1641,13 @@ function ChartTransposed(props: {
                   <td
                     style={{ left: ITER_W, width: WEEK_W, minWidth: WEEK_W }}
                     className={
-                      'sticky z-10 h-7 cursor-pointer border-b border-r border-ink-200 p-0 align-middle ' +
+                      'sticky z-10 h-7 cursor-pointer border-b border-r border-ink-200 px-2 py-1 align-middle text-[10.5px] font-medium tabular-nums ' +
                       weekBg
                     }
                     onClick={() => props.toggleIterationCollapsed(iter.id)}
-                    title="Expand iteration"
+                    title={`Expand iteration (${iterationDateRange(iter)})`}
                   >
+                    <span className="opacity-80">{iterationDateRange(iter)}</span>
                   </td>
                   {state.people.map((person, colIdx) => (
                     <CollapsedIterationCell
@@ -1510,12 +1655,16 @@ function ChartTransposed(props: {
                       rowAlt={colIdx % 2 === 1}
                       tone={tone}
                       onExpand={() => props.toggleIterationCollapsed(iter.id)}
+                      assignments={summarizeIterationAssignments(state.assignments, person.id, iter.id)}
+                      projectsById={projectsById}
+                      personName={person.name}
                     />
                   ))}
                   <td className={'border-b border-r border-ink-200 ' + (isCurrent ? 'bg-amber-50/40' : isPast ? 'bg-ink-50/70' : '')}></td>
                   <CollapsedNotesCell
                     tone={tone}
                     onExpand={() => props.toggleIterationCollapsed(iter.id)}
+                    notes={collectIterationNotes(state.weekNotes, weeks)}
                   />
                 </tr>
               );
