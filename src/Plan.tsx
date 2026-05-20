@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { navigate } from './router';
 import { usePlan, type ConnState } from './usePlan';
 
@@ -52,6 +52,14 @@ function inkFor(bg: string): string {
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
+/** Format a fractional eng-week number for display (e.g. 3, 1.5, 2.33) */
+const fmtWk = (n: number): string => {
+  if (Number.isInteger(n)) return `${n}`;
+  const r = Math.round(n * 100) / 100;
+  // Remove trailing zeros: 1.50 → 1.5, 2.00 → 2
+  return r % 1 === 0 ? `${r}` : parseFloat(r.toFixed(2)).toString();
+};
+
 /* ---------- PTO sentinel ----------
  * PTO is an assignment kind that isn't a project. We model it by reserving a
  * fixed "project id" so it flows through the same Assignment record without
@@ -66,10 +74,25 @@ const PTO_PROJECT: Project = {
   driId: null,
 };
 const isPto = (id: ID) => id === PTO_ID;
+
+/* ---------- Unavailable sentinel ----------
+ * Like PTO but means the person isn't on the team yet (or has left).
+ * Visually distinct: solid grey, "N/A" label.
+ */
+const UNAVAILABLE_ID: ID = '__unavailable__';
+const UNAVAILABLE_PROJECT: Project = {
+  id: UNAVAILABLE_ID,
+  name: 'N/A',
+  color: '#94a3b8',
+  driId: null,
+};
+const isUnavailable = (id: ID) => id === UNAVAILABLE_ID;
+const isSentinel = (id: ID) => isPto(id) || isUnavailable(id);
+
 const lookupProject = (
   projectsById: Record<ID, Project>,
   id: ID,
-): Project | undefined => (isPto(id) ? PTO_PROJECT : projectsById[id]);
+): Project | undefined => isPto(id) ? PTO_PROJECT : isUnavailable(id) ? UNAVAILABLE_PROJECT : projectsById[id];
 
 /* ---------- date helpers ---------- */
 const MS_PER_DAY = 86400000;
@@ -120,6 +143,18 @@ const readCollapsedIterationIds = (slug: string): Set<ID> => {
     return new Set(ids.filter((id): id is ID => typeof id === 'string'));
   } catch {
     return new Set();
+  }
+};
+
+const hasStoredCollapsedIds = (slug: string): boolean => {
+  try {
+    const raw = localStorage.getItem(COLLAPSED_ITERATIONS_KEY);
+    if (!raw) return false;
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
+    return slug in (parsed as Record<string, unknown>);
+  } catch {
+    return false;
   }
 };
 
@@ -261,27 +296,147 @@ function PlanView({
     [iterationToneById, state.iterations],
   );
   const plannedByProject = useMemo(() => {
+    // First pass: count non-sentinel assignments per person per week
+    const counts = new Map<string, number>();
+    for (const a of state.assignments) {
+      if (isSentinel(a.projectId)) continue;
+      const key = `${a.personId}\0${a.weekId}`;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    // Second pass: each assignment contributes 1/N where N = total non-sentinel
+    // assignments for that person in that week
     const map: Record<ID, number> = {};
     for (const a of state.assignments) {
-      if (isPto(a.projectId)) continue;
-      map[a.projectId] = (map[a.projectId] ?? 0) + 1;
+      if (isSentinel(a.projectId)) continue;
+      const key = `${a.personId}\0${a.weekId}`;
+      const n = counts.get(key) ?? 1;
+      map[a.projectId] = (map[a.projectId] ?? 0) + 1 / n;
     }
     return map;
   }, [state.assignments]);
 
+  /* ---------- undo / redo ---------- */
+  const UNDO_CAP = 50;
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const undoStackRef = useRef<State[]>([]);
+  const redoStackRef = useRef<State[]>([]);
+  const [undoLen, setUndoLen] = useState(0);
+  const [redoLen, setRedoLen] = useState(0);
+
+  // Save current state as an undo checkpoint
+  const pushUndo = useCallback(() => {
+    const stack = undoStackRef.current;
+    stack.push(stateRef.current);
+    if (stack.length > UNDO_CAP) stack.splice(0, stack.length - UNDO_CAP);
+    redoStackRef.current = [];
+    setUndoLen(stack.length);
+    setRedoLen(0);
+  }, []);
+
+  const undo = useCallback(() => {
+    const stack = undoStackRef.current;
+    if (stack.length === 0) return;
+    const prev = stack.pop()!;
+    redoStackRef.current.push(stateRef.current);
+    setState(() => prev);
+    setUndoLen(stack.length);
+    setRedoLen(redoStackRef.current.length);
+  }, [setState]);
+
+  const redo = useCallback(() => {
+    const stack = redoStackRef.current;
+    if (stack.length === 0) return;
+    const next = stack.pop()!;
+    undoStackRef.current.push(stateRef.current);
+    setState(() => next);
+    setUndoLen(undoStackRef.current.length);
+    setRedoLen(stack.length);
+  }, [setState]);
+
+  // For text fields: capture snapshot on focus, push to undo on blur if changed
+  const textSnapshotRef = useRef<State | null>(null);
+  const onTextFocus = useCallback(() => {
+    textSnapshotRef.current = stateRef.current;
+  }, []);
+  const onTextBlur = useCallback(() => {
+    const snap = textSnapshotRef.current;
+    if (snap && snap !== stateRef.current) {
+      undoStackRef.current.push(snap);
+      if (undoStackRef.current.length > UNDO_CAP) undoStackRef.current.splice(0, undoStackRef.current.length - UNDO_CAP);
+      redoStackRef.current = [];
+      setUndoLen(undoStackRef.current.length);
+      setRedoLen(0);
+    }
+    textSnapshotRef.current = null;
+  }, []);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        undo();
+      } else if ((e.ctrlKey || e.metaKey) && e.key === 'z' && e.shiftKey) {
+        e.preventDefault();
+        redo();
+      } else if ((e.ctrlKey || e.metaKey) && e.key === 'y') {
+        e.preventDefault();
+        redo();
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [undo, redo]);
+
   /* mutations */
+  // Text mutations — undo captured via onTextFocus / onTextBlur
   const setTitle = (title: string) => setState(s => ({ ...s, title }));
-  const addPerson = (name = 'New person') =>
-    setState(s => ({ ...s, people: [...s.people, { id: uid(), name }] }));
   const renamePerson = (id: ID, name: string) =>
     setState(s => ({ ...s, people: s.people.map(p => (p.id === id ? { ...p, name } : p)) }));
-  const removePerson = (id: ID) =>
+  const updateProject = (id: ID, patch: Partial<Project>) =>
+    setState(s => ({
+      ...s,
+      projects: s.projects.map(p => (p.id === id ? { ...p, ...patch } : p)),
+    }));
+  const setWeekNote = (weekId: string, text: string) =>
+    setState(s => {
+      const next = { ...(s.weekNotes ?? {}) };
+      const trimmed = text.trim();
+      if (trimmed === '') delete next[weekId];
+      else next[weekId] = text;
+      return { ...s, weekNotes: next };
+    });
+
+  // Discrete mutations — push undo before each
+  const addPerson = (name = 'New person') => {
+    pushUndo();
+    setState(s => ({ ...s, people: [...s.people, { id: uid(), name }] }));
+  };
+  const movePerson = (id: ID, dir: -1 | 1) => {
+    pushUndo();
+    setState(s => {
+      const idx = s.people.findIndex(p => p.id === id);
+      if (idx === -1) return s;
+      const newIdx = idx + dir;
+      if (newIdx < 0 || newIdx >= s.people.length) return s;
+      const next = [...s.people];
+      [next[idx], next[newIdx]] = [next[newIdx], next[idx]];
+      return { ...s, people: next };
+    });
+  };
+  const removePerson = (id: ID) => {
+    pushUndo();
     setState(s => ({
       ...s,
       people: s.people.filter(p => p.id !== id),
       assignments: s.assignments.filter(a => a.personId !== id),
     }));
+  };
   const addProject = (): ID => {
+    pushUndo();
     const id = uid();
     setState(s => ({
       ...s,
@@ -292,18 +447,16 @@ function PlanView({
     }));
     return id;
   };
-  const updateProject = (id: ID, patch: Partial<Project>) =>
-    setState(s => ({
-      ...s,
-      projects: s.projects.map(p => (p.id === id ? { ...p, ...patch } : p)),
-    }));
-  const removeProject = (id: ID) =>
+  const removeProject = (id: ID) => {
+    pushUndo();
     setState(s => ({
       ...s,
       projects: s.projects.filter(p => p.id !== id),
       assignments: s.assignments.filter(a => a.projectId !== id),
     }));
-  const addIteration = () =>
+  };
+  const addIteration = () => {
+    pushUndo();
     setState(s => {
       const nextStart =
         s.iterations.length === 0
@@ -313,7 +466,9 @@ function PlanView({
       next.sort((a, b) => a.startDate.localeCompare(b.startDate));
       return { ...s, iterations: next };
     });
-  const addPastIteration = () =>
+  };
+  const addPastIteration = () => {
+    pushUndo();
     setState(s => {
       const prevStart =
         s.iterations.length === 0
@@ -323,22 +478,24 @@ function PlanView({
       next.sort((a, b) => a.startDate.localeCompare(b.startDate));
       return { ...s, iterations: next };
     });
-  const setIterationStart = (id: ID, isoDate: string) =>
+  };
+  const setIterationStart = (id: ID, isoDate: string) => {
+    pushUndo();
     setState(s => {
       const d = parseISODate(isoDate);
       if (isNaN(d.getTime())) return s;
       const anchor = mondayOf(d);
       const anchorIdx = s.iterations.findIndex(i => i.id === id);
       if (anchorIdx === -1) return s;
-      // Re-derive every iteration's start date relative to the anchor,
-      // keeping the fixed 2-week cadence between them.
       const next = s.iterations.map((iter, idx) => ({
         ...iter,
         startDate: toISODate(addDays(anchor, (idx - anchorIdx) * 14)),
       }));
       return { ...s, iterations: next };
     });
-  const removeIteration = (iterationId: ID) =>
+  };
+  const removeIteration = (iterationId: ID) => {
+    pushUndo();
     setState(s => {
       const weekIds = new Set([`${iterationId}:0`, `${iterationId}:1`]);
       return {
@@ -347,13 +504,17 @@ function PlanView({
         assignments: s.assignments.filter(a => !weekIds.has(a.weekId)),
       };
     });
-  const addAssignment = (personId: ID, weekId: string, projectId: ID) =>
+  };
+  const addAssignment = (personId: ID, weekId: string, projectId: ID) => {
+    pushUndo();
     setState(s => {
       if (s.assignments.some(a => a.personId === personId && a.weekId === weekId && a.projectId === projectId))
         return s;
       return { ...s, assignments: [...s.assignments, { id: uid(), personId, weekId, projectId }] };
     });
-  const moveAssignment = (assignmentId: ID, personId: ID, weekId: string) =>
+  };
+  const moveAssignment = (assignmentId: ID, personId: ID, weekId: string) => {
+    pushUndo();
     setState(s => {
       const a = s.assignments.find(x => x.id === assignmentId);
       if (!a) return s;
@@ -366,19 +527,17 @@ function PlanView({
         assignments: s.assignments.map(x => (x.id === assignmentId ? { ...x, personId, weekId } : x)),
       };
     });
-  const removeAssignment = (id: ID) =>
-    setState(s => ({ ...s, assignments: s.assignments.filter(a => a.id !== id) }));
-  const clearAssignments = () => {
-    if (confirm('Clear all assignments?')) setState(s => ({ ...s, assignments: [] }));
   };
-  const setWeekNote = (weekId: string, text: string) =>
-    setState(s => {
-      const next = { ...(s.weekNotes ?? {}) };
-      const trimmed = text.trim();
-      if (trimmed === '') delete next[weekId];
-      else next[weekId] = text;
-      return { ...s, weekNotes: next };
-    });
+  const removeAssignment = (id: ID) => {
+    pushUndo();
+    setState(s => ({ ...s, assignments: s.assignments.filter(a => a.id !== id) }));
+  };
+  const clearAssignments = () => {
+    if (confirm('Clear all assignments?')) {
+      pushUndo();
+      setState(s => ({ ...s, assignments: [] }));
+    }
+  };
 
   /* Auto-scroll the chart so the current iteration is the first one visible.
    * Runs when the current iteration changes (e.g. after the plan loads from
@@ -389,6 +548,26 @@ function PlanView({
   const [collapsedIterationIds, setCollapsedIterationIds] = useState<Set<ID>>(
     () => readCollapsedIterationIds(slug),
   );
+  const didAutoCollapse = useRef(false);
+
+  // On first load, auto-collapse past iterations if no stored preference exists
+  useEffect(() => {
+    if (didAutoCollapse.current) return;
+    if (state.iterations.length === 0) return;
+    if (hasStoredCollapsedIds(slug)) { didAutoCollapse.current = true; return; }
+    didAutoCollapse.current = true;
+    const today = startOfToday();
+    const pastIds = state.iterations
+      .filter(iter => iterationTone(iter, today) === 'past')
+      .map(iter => iter.id);
+    if (pastIds.length > 0) {
+      setCollapsedIterationIds(prev => {
+        const next = new Set(prev);
+        for (const id of pastIds) next.add(id);
+        return next;
+      });
+    }
+  }, [slug, state.iterations]);
 
   useEffect(() => {
     const validIds = new Set(state.iterations.map(iter => iter.id));
@@ -422,12 +601,15 @@ function PlanView({
   /* projects panel state */
   const [transposed, setTransposed] = useState<boolean>(() => {
     try {
-      return localStorage.getItem(TRANSPOSED_KEY) === '1';
+      const stored = localStorage.getItem(TRANSPOSED_KEY);
+      return stored === null ? true : stored === '1';
     } catch {
-      return false;
+      return true;
     }
   });
   const [editingProjectId, setEditingProjectId] = useState<ID | null>(null);
+  const [isAddingProject, setIsAddingProject] = useState(false);
+  const [highlightedProjectId, setHighlightedProjectId] = useState<ID | null>(null);
   useEffect(() => {
     try { localStorage.setItem(TRANSPOSED_KEY, transposed ? '1' : '0'); } catch {}
     // re-trigger auto-scroll on layout swap
@@ -521,6 +703,8 @@ function PlanView({
           className="min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-2.5 py-1.5 text-[14px] font-semibold text-ink-900 outline-none transition hover:bg-ink-100/70 focus:border-ink-300 focus:bg-white focus:ring-2 focus:ring-brand-200"
           value={state.title}
           onChange={e => setTitle(e.target.value)}
+          onFocus={onTextFocus}
+          onBlur={onTextBlur}
         />
         <Presence conn={conn} peers={peers} />
         <ToolbarButton subtle onClick={addPastIteration} title="Add an iteration before the first one">
@@ -535,6 +719,8 @@ function PlanView({
         >
           {transposed ? '⇆ People as rows' : '⇆ Weeks as rows'}
         </ToolbarButton>
+        <ToolbarButton subtle disabled={undoLen === 0} onClick={undo} title="Undo (Ctrl+Z)">↩ Undo</ToolbarButton>
+        <ToolbarButton subtle disabled={redoLen === 0} onClick={redo} title="Redo (Ctrl+Shift+Z)">↪ Redo</ToolbarButton>
         <ToolbarButton subtle onClick={clearAssignments}>Clear chart</ToolbarButton>
       </div>
 
@@ -549,8 +735,10 @@ function PlanView({
               collapsedIterationIds={collapsedIterationIds}
               currentIterationId={currentIterationId}
               iterationToneById={iterationToneById}
+              highlightedProjectId={highlightedProjectId}
               toggleIterationCollapsed={toggleIterationCollapsed}
               renamePerson={renamePerson}
+              movePerson={movePerson}
               removePerson={removePerson}
               addPerson={addPerson}
               removeIteration={removeIteration}
@@ -559,6 +747,8 @@ function PlanView({
               moveAssignment={moveAssignment}
               removeAssignment={removeAssignment}
               setWeekNote={setWeekNote}
+              onTextFocus={onTextFocus}
+              onTextBlur={onTextBlur}
             />
           ) : (
             <Chart
@@ -568,8 +758,10 @@ function PlanView({
               collapsedIterationIds={collapsedIterationIds}
               currentIterationId={currentIterationId}
               iterationToneById={iterationToneById}
+              highlightedProjectId={highlightedProjectId}
               toggleIterationCollapsed={toggleIterationCollapsed}
               renamePerson={renamePerson}
+              movePerson={movePerson}
               removePerson={removePerson}
               addPerson={addPerson}
               removeIteration={removeIteration}
@@ -578,6 +770,8 @@ function PlanView({
               moveAssignment={moveAssignment}
               removeAssignment={removeAssignment}
               setWeekNote={setWeekNote}
+              onTextFocus={onTextFocus}
+              onTextBlur={onTextBlur}
             />
           )}
         </div>
@@ -612,7 +806,7 @@ function PlanView({
           }
           style={transposed ? { width: panel.collapsed ? 48 : panel.height } : { height: panel.collapsed ? 48 : panel.height }}
         >
-          <div className="flex shrink-0 items-center gap-3 border-b border-ink-200 bg-gradient-to-b from-ink-50/60 to-white px-5 py-2.5">
+          <div className="flex shrink-0 flex-nowrap items-center gap-3 overflow-hidden border-b border-ink-200 bg-gradient-to-b from-ink-50/60 to-white px-5 py-2.5">
             <button
               className="-ml-1 flex h-7 w-7 items-center justify-center rounded-md text-ink-500 transition hover:bg-ink-100 hover:text-ink-900"
               onClick={() => setPanel(p => ({ ...p, collapsed: !p.collapsed }))}
@@ -627,17 +821,18 @@ function PlanView({
             <span className="rounded-full bg-ink-100 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-ink-600">
               {state.projects.length}
             </span>
-            {!panel.collapsed && (
+            {!panel.collapsed && !transposed && (
               <span className="hidden text-[12px] text-ink-500 md:inline">
                 Drag the colored chip onto a cell, or click any cell to pick.
               </span>
             )}
             <span className="flex-1" />
             <button
-              className="inline-flex h-7 items-center gap-1 rounded-md bg-gradient-to-b from-brand-600 to-brand-700 px-3 text-[12px] font-semibold text-white shadow-sm transition hover:from-brand-700 hover:to-brand-700 active:scale-[0.98]"
+              className="inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-md bg-gradient-to-b from-brand-600 to-brand-700 px-3 text-[12px] font-semibold text-white shadow-sm transition hover:from-brand-700 hover:to-brand-700 active:scale-[0.98]"
               onClick={() => {
                 if (panel.collapsed) setPanel(p => ({ ...p, collapsed: false }));
                 const id = addProject();
+                setIsAddingProject(true);
                 setEditingProjectId(id);
               }}
             >
@@ -657,6 +852,8 @@ function PlanView({
                 editingId={editingProjectId}
                 onStartEdit={id => setEditingProjectId(id)}
                 onStopEdit={() => setEditingProjectId(null)}
+                highlightedProjectId={highlightedProjectId}
+                onToggleHighlight={id => setHighlightedProjectId(prev => prev === id ? null : id)}
               />
             </div>
           )}
@@ -670,7 +867,8 @@ function PlanView({
         planned={plannedByProject[editingProject.id] ?? 0}
         onUpdate={patch => updateProject(editingProject.id, patch)}
         onRemove={() => removeProject(editingProject.id)}
-        onClose={() => setEditingProjectId(null)}
+        onClose={() => { setEditingProjectId(null); setIsAddingProject(false); }}
+        isNew={isAddingProject}
       />
     )}
     </>
@@ -726,14 +924,17 @@ function ToolbarButton(props: {
   onClick?: () => void;
   subtle?: boolean;
   title?: string;
+  disabled?: boolean;
 }) {
   const base =
     'inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[12px] font-medium transition active:scale-[0.98]';
-  const styled = props.subtle
+  const styled = props.disabled
+    ? 'text-ink-300 cursor-not-allowed'
+    : props.subtle
     ? 'text-ink-500 hover:bg-ink-100 hover:text-ink-900'
     : 'border border-ink-200 bg-white text-ink-800 shadow-sm hover:border-ink-300 hover:bg-ink-50';
   return (
-    <button className={base + ' ' + styled} onClick={props.onClick} title={props.title}>
+    <button className={base + ' ' + styled} onClick={props.disabled ? undefined : props.onClick} title={props.title} disabled={props.disabled}>
       {props.children}
     </button>
   );
@@ -774,8 +975,10 @@ function Chart(props: {
   collapsedIterationIds: Set<ID>;
   currentIterationId: ID | null;
   iterationToneById: Record<ID, IterationTone>;
+  highlightedProjectId: ID | null;
   toggleIterationCollapsed: (id: ID) => void;
   renamePerson: (id: ID, name: string) => void;
+  movePerson: (id: ID, dir: -1 | 1) => void;
   removePerson: (id: ID) => void;
   addPerson: (name?: string) => void;
   removeIteration: (id: ID) => void;
@@ -784,6 +987,8 @@ function Chart(props: {
   moveAssignment: (assignmentId: ID, personId: ID, weekId: string) => void;
   removeAssignment: (id: ID) => void;
   setWeekNote: (weekId: string, text: string) => void;
+  onTextFocus: () => void;
+  onTextBlur: () => void;
 }) {
   const { state, allWeeks, projectsById } = props;
   const [picker, setPicker] = useState<{ personId: ID; weekId: string; rect: DOMRect } | null>(null);
@@ -1004,7 +1209,7 @@ function Chart(props: {
                   <th
                     key={w.id}
                     className={
-                      'sticky top-9 z-20 h-8 min-w-[132px] border-b px-2 text-center text-[11px] font-medium tabular-nums ' +
+                      'sticky top-9 z-20 h-8 min-w-[160px] border-b px-2 text-center text-[11px] font-medium tabular-nums ' +
                       weekToneClass +
                       ' border-r ' +
                       (isIterEnd
@@ -1029,9 +1234,27 @@ function Chart(props: {
                 }
               >
                 <div className="flex items-center gap-1">
+                  <div className="flex flex-col opacity-0 group-hover/row:opacity-100">
+                    <button
+                      type="button"
+                      onClick={() => props.movePerson(person.id, -1)}
+                      disabled={rowIdx === 0}
+                      className="px-0.5 text-[9px] leading-none text-ink-400 hover:text-ink-700 disabled:invisible"
+                      title="Move up"
+                    >▲</button>
+                    <button
+                      type="button"
+                      onClick={() => props.movePerson(person.id, 1)}
+                      disabled={rowIdx === state.people.length - 1}
+                      className="px-0.5 text-[9px] leading-none text-ink-400 hover:text-ink-700 disabled:invisible"
+                      title="Move down"
+                    >▼</button>
+                  </div>
                   <input
                     value={person.name}
                     onChange={e => props.renamePerson(person.id, e.target.value)}
+                    onFocus={props.onTextFocus}
+                    onBlur={props.onTextBlur}
                     className="min-w-0 flex-1 rounded border border-transparent bg-transparent px-2 py-1 text-[13px] font-medium text-ink-900 outline-none transition hover:bg-white hover:shadow-sm focus:border-ink-300 focus:bg-white focus:ring-2 focus:ring-brand-200"
                   />
                   <IconButton
@@ -1089,6 +1312,7 @@ function Chart(props: {
                       isIterEnd={weekIdx === weeks.length - 1}
                       isCurrentWeek={tone === 'current'}
                       isPastWeek={tone === 'past'}
+                      highlightedProjectId={props.highlightedProjectId}
                       extendPreviewProject={extendPreviewProject}
                       onAdd={pid => props.addAssignment(person.id, w.id, pid)}
                       onMove={aid => props.moveAssignment(aid, person.id, w.id)}
@@ -1125,7 +1349,7 @@ function Chart(props: {
                   <td
                     key={w.id}
                     className={
-                      'h-[44px] min-w-[132px] border-t-2 border-b border-r border-ink-200 p-1 align-middle ' +
+                      'min-w-[160px] border-t-2 border-b border-r border-ink-200 p-1 align-top ' +
                       (tone === 'current'
                         ? 'bg-amber-50/40'
                         : tone === 'past' ? 'bg-ink-50/70' : 'bg-white') +
@@ -1137,6 +1361,8 @@ function Chart(props: {
                       onChange={text => props.setWeekNote(w.id, text)}
                       title={note || 'Add a note for this week'}
                       muted={tone === 'past'}
+                      onFocus={props.onTextFocus}
+                      onBlur={props.onTextBlur}
                     />
                   </td>
                 );
@@ -1230,6 +1456,7 @@ function CollapsedIterationCell(props: {
           const project = lookupProject(props.projectsById, s.projectId);
           if (!project) return null;
           const pto = isPto(s.projectId);
+          const unavail = isUnavailable(s.projectId);
           const widthPx = Math.max(10, s.weeks * 14);
           return (
             <span
@@ -1238,12 +1465,16 @@ function CollapsedIterationCell(props: {
                 'inline-block h-2.5 rounded-full ' +
                 (pto
                   ? 'border border-dashed border-ink-400/70'
+                  : unavail
+                  ? 'border border-ink-400/70'
                   : 'border border-black/10 shadow-[inset_0_1px_0_rgba(255,255,255,0.45)]')
               }
               style={{
                 width: `${widthPx}px`,
                 background: pto
                   ? 'repeating-linear-gradient(135deg,#f1f5f9 0 4px,#cbd5e1 4px 8px)'
+                  : unavail
+                  ? '#94a3b8'
                   : project.color,
               }}
               aria-hidden
@@ -1329,19 +1560,36 @@ function WeekNoteTextarea(props: {
   title?: string;
   compact?: boolean;
   muted?: boolean;
+  onFocus?: () => void;
+  onBlur?: () => void;
 }) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+
+  const autoGrow = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.max(el.scrollHeight, props.compact ? 48 : 64)}px`;
+  }, [props.compact]);
+
+  useEffect(autoGrow, [props.value, autoGrow]);
+
   return (
     <textarea
+      ref={ref}
       value={props.value}
       onChange={e => props.onChange(e.target.value)}
-      placeholder="Add note…"
+      onInput={autoGrow}
+      onFocus={props.onFocus}
+      onBlur={props.onBlur}
+      placeholder="Notes…"
       title={props.title}
-      rows={props.compact ? 2 : 3}
+      rows={1}
       className={
-        'block w-full resize-y rounded border border-transparent bg-transparent px-2 py-1.5 text-[12px] leading-snug outline-none transition placeholder:text-ink-300 hover:bg-white hover:shadow-sm focus:border-ink-300 focus:bg-white focus:ring-2 focus:ring-brand-200 ' +
-        (props.compact ? 'min-h-[56px] ' : 'min-h-[72px] ') +
+        'block w-full resize-none rounded-lg border border-transparent bg-transparent px-2.5 py-2 text-[13px] leading-relaxed outline-none transition placeholder:text-ink-300/60 hover:bg-white hover:shadow-sm focus:border-brand-300 focus:bg-white focus:ring-2 focus:ring-brand-200 ' +
         (props.muted ? 'text-ink-500' : 'text-ink-700')
       }
+      style={{ overflow: 'hidden' }}
     />
   );
 }
@@ -1357,8 +1605,10 @@ function ChartTransposed(props: {
   collapsedIterationIds: Set<ID>;
   currentIterationId: ID | null;
   iterationToneById: Record<ID, IterationTone>;
+  highlightedProjectId: ID | null;
   toggleIterationCollapsed: (id: ID) => void;
   renamePerson: (id: ID, name: string) => void;
+  movePerson: (id: ID, dir: -1 | 1) => void;
   removePerson: (id: ID) => void;
   addPerson: (name?: string) => void;
   removeIteration: (id: ID) => void;
@@ -1367,6 +1617,8 @@ function ChartTransposed(props: {
   moveAssignment: (assignmentId: ID, personId: ID, weekId: string) => void;
   removeAssignment: (id: ID) => void;
   setWeekNote: (weekId: string, text: string) => void;
+  onTextFocus: () => void;
+  onTextBlur: () => void;
 }) {
   const { state, allWeeks, projectsById } = props;
   const [picker, setPicker] = useState<{ personId: ID; weekId: string; rect: DOMRect } | null>(null);
@@ -1457,15 +1709,33 @@ function ChartTransposed(props: {
             >
               Week
             </th>
-            {state.people.map(person => (
+            {state.people.map((person, colIdx) => (
               <th
                 key={person.id}
                 className="group/col sticky top-0 z-20 h-9 min-w-[140px] border-b border-r border-ink-200 bg-ink-50 px-2 py-1 text-left align-middle"
               >
                 <div className="flex items-center gap-1">
+                  <div className="flex opacity-0 group-hover/col:opacity-100">
+                    <button
+                      type="button"
+                      onClick={() => props.movePerson(person.id, -1)}
+                      disabled={colIdx === 0}
+                      className="px-0.5 text-[9px] leading-none text-ink-400 hover:text-ink-700 disabled:invisible"
+                      title="Move left"
+                    >◀</button>
+                    <button
+                      type="button"
+                      onClick={() => props.movePerson(person.id, 1)}
+                      disabled={colIdx === state.people.length - 1}
+                      className="px-0.5 text-[9px] leading-none text-ink-400 hover:text-ink-700 disabled:invisible"
+                      title="Move right"
+                    >▶</button>
+                  </div>
                   <input
                     value={person.name}
                     onChange={e => props.renamePerson(person.id, e.target.value)}
+                    onFocus={props.onTextFocus}
+                    onBlur={props.onTextBlur}
                     className="min-w-0 flex-1 rounded border border-transparent bg-transparent px-2 py-1 text-[12.5px] font-semibold text-ink-900 outline-none transition hover:bg-white hover:shadow-sm focus:border-ink-300 focus:bg-white focus:ring-2 focus:ring-brand-200"
                   />
                   <IconButton
@@ -1723,6 +1993,7 @@ function ChartTransposed(props: {
                         isIterEnd={false}
                         isCurrentWeek={isCurrent}
                         isPastWeek={isPast}
+                        highlightedProjectId={props.highlightedProjectId}
                         extendPreviewProject={extendPreviewProject}
                         onAdd={pid => props.addAssignment(person.id, w.id, pid)}
                         onMove={aid => props.moveAssignment(aid, person.id, w.id)}
@@ -1737,7 +2008,7 @@ function ChartTransposed(props: {
                   {/* Notes col */}
                   <td
                     className={
-                      'border-b border-l border-ink-200 p-1 align-middle ' +
+                      'border-b border-l border-ink-200 p-1 align-top ' +
                       (isCurrent ? 'bg-amber-50/40' : isPast ? 'bg-ink-50/70' : 'bg-white')
                     }
                   >
@@ -1747,6 +2018,8 @@ function ChartTransposed(props: {
                       title={state.weekNotes?.[w.id] || 'Add a note for this week'}
                       compact
                       muted={isPast}
+                      onFocus={props.onTextFocus}
+                      onBlur={props.onTextBlur}
                     />
                   </td>
                 </tr>
@@ -1781,6 +2054,7 @@ function Cell(props: {
   isCurrentWeek: boolean;
   isPastWeek: boolean;
   rowAlt: boolean;
+  highlightedProjectId: ID | null;
   extendPreviewProject?: Project;
   onAdd: (projectId: ID) => void;
   onMove: (assignmentId: ID) => void;
@@ -1810,13 +2084,20 @@ function Cell(props: {
     if (pid) props.onAdd(pid);
   };
 
-  const baseBg = props.isCurrentWeek
+  const hasUnavailable = props.assignments.some(a => isUnavailable(a.projectId));
+
+  const baseBg = hasUnavailable
+    ? 'bg-ink-200/60'
+    : props.isCurrentWeek
     ? (props.rowAlt ? 'bg-amber-50/60 hover:bg-amber-50' : 'bg-amber-50/40 hover:bg-amber-50')
     : props.isPastWeek
     ? (props.rowAlt ? 'bg-ink-100/70 hover:bg-ink-100' : 'bg-ink-50/80 hover:bg-ink-100')
     : props.rowAlt
     ? 'bg-ink-50/40 hover:bg-brand-50/40'
     : 'bg-white hover:bg-brand-50/40';
+
+  const hasHighlightedProject = props.highlightedProjectId != null &&
+    props.assignments.some(a => a.projectId === props.highlightedProjectId);
 
   return (
     <td
@@ -1825,11 +2106,12 @@ function Cell(props: {
       data-pid={props.personId}
       data-wid={props.weekId}
       className={
-        'group/cell relative h-[64px] min-w-[132px] cursor-pointer border-b border-r border-ink-200 p-1 align-middle transition-colors ' +
+        'group/cell relative min-h-[64px] min-w-[160px] cursor-pointer border-b border-r border-ink-200 p-1 align-middle transition-colors ' +
         baseBg +
         (props.isIterEnd ? ' border-r-2 border-r-ink-300' : '') +
         (hover ? ' !bg-brand-50 ring-2 ring-inset ring-brand-400' : '') +
-        (props.extendPreviewProject ? ' ring-2 ring-inset ring-brand-400/70' : '')
+        (props.extendPreviewProject ? ' ring-2 ring-inset ring-brand-400/70' : '') +
+        (hasHighlightedProject && !hover ? ' ring-2 ring-inset ring-brand-500 bg-brand-50/30' : '')
       }
       onDragOver={onDragOver}
       onDragLeave={() => setHover(false)}
@@ -1837,11 +2119,11 @@ function Cell(props: {
       onClick={() => cellRef.current && props.onPick(cellRef.current.getBoundingClientRect())}
       title="Click to add a project, or drag one in"
     >
-      <div className="flex min-h-[56px] flex-col items-center justify-center gap-1">
+      <div className="flex min-h-[48px] flex-col items-start justify-center gap-1 px-0.5">
         {props.assignments.length === 0 && !props.extendPreviewProject && (
           <span
             className={
-              'pointer-events-none select-none text-ink-300 transition ' +
+              'pointer-events-none w-full select-none text-center text-ink-300 transition ' +
               (hover
                 ? 'text-[11px] italic font-medium text-brand-600 opacity-100'
                 : 'text-[18px] font-light opacity-0 group-hover/cell:opacity-60')
@@ -1875,8 +2157,9 @@ function Cell(props: {
               key={a.id}
               project={proj}
               isPto={isPto(a.projectId)}
+              isUnavailable={isUnavailable(a.projectId)}
               isOwnDri={proj.driId === props.personId}
-              muted={props.isPastWeek}
+              muted={props.isPastWeek || (props.highlightedProjectId != null && props.highlightedProjectId !== a.projectId)}
               onDragStart={e => {
                 e.dataTransfer.setData('application/x-assignment', a.id);
                 e.dataTransfer.effectAllowed = 'move';
@@ -1898,6 +2181,7 @@ function Cell(props: {
 function AssignChip(props: {
   project: Project;
   isPto?: boolean;
+  isUnavailable?: boolean;
   isOwnDri: boolean;
   muted?: boolean;
   onDragStart: (e: React.DragEvent) => void;
@@ -1905,11 +2189,12 @@ function AssignChip(props: {
   onRemove: () => void;
   onStartExtend: () => void;
 }) {
-  const { project, isOwnDri, isPto: pto } = props;
-  const ink = pto ? '#475569' : inkFor(project.color);
+  const { project, isOwnDri, isPto: pto, isUnavailable: unavail } = props;
+  const isSentinelChip = pto || unavail;
+  const ink = isSentinelChip ? '#475569' : inkFor(project.color);
   const baseClass =
     'group/chip relative inline-flex max-w-full min-w-0 cursor-grab items-center gap-1 rounded-full px-2.5 py-[3px] pr-3 text-left text-[11px] font-semibold leading-tight transition-transform active:cursor-grabbing hover:-translate-y-px';
-  const chipStyle = pto ? { color: ink } : { background: project.color, color: ink };
+  const chipStyle = isSentinelChip ? { color: ink } : { background: project.color, color: ink };
   const mutedStyle = props.muted
     ? { ...chipStyle, filter: 'saturate(0.55)', opacity: 0.72 }
     : chipStyle;
@@ -1921,6 +2206,8 @@ function AssignChip(props: {
       title={
         pto
           ? 'PTO'
+          : unavail
+          ? 'Not available'
           : project.name +
             (isOwnDri ? ' · DRI' : '') +
             (project.url ? `\nClick to open ${project.url}` : '')
@@ -1930,8 +2217,10 @@ function AssignChip(props: {
         ' ' +
         (pto
           ? 'border border-dashed border-ink-400/60 bg-[repeating-linear-gradient(135deg,#f1f5f9_0_6px,#e2e8f0_6px_12px)] uppercase tracking-[0.06em]'
+          : unavail
+          ? 'border border-ink-400/60 bg-ink-300 uppercase tracking-[0.06em]'
           : 'border border-black/[0.06] shadow-[inset_0_1px_0_rgba(255,255,255,0.5),0_1px_1px_rgba(15,23,42,0.05)]') +
-        (project.url && !pto ? ' cursor-pointer' : '')
+        (project.url && !isSentinelChip ? ' cursor-pointer' : '')
       }
       style={mutedStyle}
     >
@@ -1939,17 +2228,21 @@ function AssignChip(props: {
         <span className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center text-[10px]" aria-hidden>
           ☀
         </span>
+      ) : unavail ? (
+        <span className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center text-[10px]" aria-hidden>
+          ∅
+        </span>
       ) : (
         isOwnDri && (
           <span
-            className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full bg-white/70 text-[8px] font-bold"
+            className="inline-flex shrink-0 items-center justify-center rounded bg-white/70 px-1 text-[7px] font-bold uppercase tracking-wide"
             title="DRI"
           >
-            ★
+            DRI
           </span>
         )
       )}
-      <span className="min-w-0 whitespace-normal break-words leading-tight">
+      <span className="min-w-0 truncate leading-tight">
         {project.name}
       </span>
       <span
@@ -2002,6 +2295,8 @@ function ProjectsTable(props: {
   editingId: ID | null;
   onStartEdit: (id: ID) => void;
   onStopEdit: () => void;
+  highlightedProjectId: ID | null;
+  onToggleHighlight: (id: ID) => void;
 }) {
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
   const [sortDir, setSortDir] = useState<SortDir>('asc');
@@ -2076,7 +2371,7 @@ function ProjectsTable(props: {
         ))}
         {sortBtn('Planned', 'planned', (
           <span className="ml-0.5 normal-case tracking-normal text-ink-400">
-            · {totals.planned}{totals.estimated > 0 ? ` / ${totals.estimated}` : ''} wk
+            · {fmtWk(totals.planned)}{totals.estimated > 0 ? ` / ${totals.estimated}` : ''} wk
           </span>
         ))}
       </div>
@@ -2105,6 +2400,8 @@ function ProjectsTable(props: {
               }
             }}
             compact={!!props.compact}
+            isHighlighted={props.highlightedProjectId === p.id}
+            onToggleHighlight={() => props.onToggleHighlight(p.id)}
           />
         ))}
       </div>
@@ -2121,6 +2418,8 @@ function ProjectRow(props: {
   onUpdate: (patch: Partial<Project>) => void;
   onRemove: () => void;
   compact: boolean;
+  isHighlighted: boolean;
+  onToggleHighlight: () => void;
 }) {
   const { project, planned } = props;
   const [colorOpen, setColorOpen] = useState(false);
@@ -2134,11 +2433,11 @@ function ProjectRow(props: {
 
   const est = project.estimatedWeeks;
   let badgeClass = 'bg-ink-100 text-ink-500 border-ink-200';
-  let badgeText = `${planned}`;
+  let badgeText = fmtWk(planned);
   if (est != null && est > 0) {
-    badgeText = `${planned} / ${est}`;
-    if (planned > est) badgeClass = 'bg-rose-50 text-rose-700 border-rose-200 font-semibold';
-    else if (planned === est) badgeClass = 'bg-emerald-50 text-emerald-700 border-emerald-200 font-semibold';
+    badgeText = `${fmtWk(planned)} / ${est}`;
+    if (planned > est + 0.01) badgeClass = 'bg-rose-50 text-rose-700 border-rose-200 font-semibold';
+    else if (Math.abs(planned - est) <= 0.01) badgeClass = 'bg-emerald-50 text-emerald-700 border-emerald-200 font-semibold';
     else badgeClass = 'bg-ink-100 text-ink-700 border-ink-200';
   } else if (planned === 0) {
     badgeClass = 'bg-transparent text-ink-400 border-transparent';
@@ -2153,7 +2452,8 @@ function ProjectRow(props: {
         ref={swatchRef}
         draggable
         onDragStart={onChipDragStart}
-        onClick={() => {
+        onClick={e => {
+          e.stopPropagation();
           if (swatchRef.current) setColorRect(swatchRef.current.getBoundingClientRect());
           setColorOpen(true);
         }}
@@ -2177,7 +2477,7 @@ function ProjectRow(props: {
   const plannedBadge = (
     <span
       className={'inline-flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-[3px] text-[12px] tabular-nums ' + badgeClass}
-      title={est != null && est > 0 ? `${planned} planned / ${est} estimated eng-weeks` : 'Planned eng-weeks across all assignments'}
+      title={est != null && est > 0 ? `${fmtWk(planned)} planned / ${est} estimated eng-weeks` : 'Planned eng-weeks across all assignments'}
     >
       {badgeText} <span className="text-[10.5px] opacity-70">wk</span>
     </span>
@@ -2188,7 +2488,7 @@ function ProjectRow(props: {
       className="inline-flex shrink-0 items-center gap-1 rounded-full border border-ink-200 bg-white px-2.5 py-[3px] text-[12px] text-ink-700"
       title={`DRI: ${dri.name}`}
     >
-      <span className="text-[11px] text-amber-500">★</span>
+      <span className="rounded bg-amber-100 px-1 text-[9px] font-bold uppercase tracking-wide text-amber-700">DRI</span>
       {dri.name}
     </span>
   ) : (
@@ -2203,7 +2503,7 @@ function ProjectRow(props: {
   const editBtn = (
     <button
       type="button"
-      onClick={props.onStartEdit}
+      onClick={e => { e.stopPropagation(); props.onStartEdit(); }}
       title="Edit project"
       className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border border-ink-200 bg-white px-2 text-[12px] text-ink-600 transition hover:bg-ink-50 hover:text-ink-800"
     >
@@ -2212,7 +2512,7 @@ function ProjectRow(props: {
   );
 
   const deleteBtn = (
-    <IconButton danger title="Delete project" onClick={props.onRemove}>×</IconButton>
+    <IconButton danger title="Delete project" onClick={e => { e.stopPropagation(); props.onRemove(); }}>×</IconButton>
   );
 
   const titleNode = project.url ? (
@@ -2220,6 +2520,7 @@ function ProjectRow(props: {
       href={project.url}
       target="_blank"
       rel="noopener noreferrer"
+      onClick={e => e.stopPropagation()}
       className="block truncate text-[13px] font-semibold text-ink-900 hover:text-brand-700 hover:underline"
       title={`Open ${project.url}`}
     >
@@ -2230,7 +2531,16 @@ function ProjectRow(props: {
   );
 
   return (
-    <div className="group/row border-b border-ink-100 transition hover:bg-ink-50/60">
+    <div
+      className={
+        'group/row border-b border-ink-100 cursor-pointer transition ' +
+        (props.isHighlighted
+          ? 'bg-brand-50 ring-2 ring-inset ring-brand-400'
+          : 'hover:bg-ink-50/60')
+      }
+      onClick={props.onToggleHighlight}
+      title={props.isHighlighted ? 'Click to clear highlight' : 'Click to highlight this project in the chart'}
+    >
       {props.compact ? (
         <div className="flex items-center gap-2 px-3 py-2.5">
           {chip}
@@ -2267,6 +2577,7 @@ function ProjectEditModal(props: {
   onUpdate: (patch: Partial<Project>) => void;
   onRemove: () => void;
   onClose: () => void;
+  isNew?: boolean;
 }) {
   const { project, planned } = props;
   const swatchRef = useRef<HTMLButtonElement>(null);
@@ -2282,11 +2593,11 @@ function ProjectEditModal(props: {
   const ink = inkFor(project.color);
   const est = project.estimatedWeeks;
   let badgeClass = 'bg-ink-100 text-ink-500 border-ink-200';
-  let badgeText = `${planned}`;
+  let badgeText = fmtWk(planned);
   if (est != null && est > 0) {
-    badgeText = `${planned} / ${est}`;
-    if (planned > est) badgeClass = 'bg-rose-50 text-rose-700 border-rose-200 font-semibold';
-    else if (planned === est) badgeClass = 'bg-emerald-50 text-emerald-700 border-emerald-200 font-semibold';
+    badgeText = `${fmtWk(planned)} / ${est}`;
+    if (planned > est + 0.01) badgeClass = 'bg-rose-50 text-rose-700 border-rose-200 font-semibold';
+    else if (Math.abs(planned - est) <= 0.01) badgeClass = 'bg-emerald-50 text-emerald-700 border-emerald-200 font-semibold';
     else badgeClass = 'bg-ink-100 text-ink-700 border-ink-200';
   } else if (planned === 0) {
     badgeClass = 'bg-transparent text-ink-400 border-transparent';
@@ -2381,7 +2692,7 @@ function ProjectEditModal(props: {
               <div className="flex h-9 items-center">
                 <span
                   className={'inline-flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-[3px] text-[12px] tabular-nums ' + badgeClass}
-                  title={est != null && est > 0 ? `${planned} planned / ${est} estimated eng-weeks` : 'Planned eng-weeks across all assignments'}
+                  title={est != null && est > 0 ? `${fmtWk(planned)} planned / ${est} estimated eng-weeks` : 'Planned eng-weeks across all assignments'}
                 >
                   {badgeText} <span className="text-[10.5px] opacity-70">wk</span>
                 </span>
@@ -2414,18 +2725,22 @@ function ProjectEditModal(props: {
           </label>
         </div>
         <div className="flex items-center justify-between gap-2 border-t border-ink-100 bg-ink-50/40 px-5 py-3">
-          <button
-            type="button"
-            onClick={() => {
-              if (confirm(`Delete project "${project.name}"?`)) {
-                props.onRemove();
-                props.onClose();
-              }
-            }}
-            className="inline-flex h-8 items-center gap-1 rounded-md border border-rose-200 bg-white px-3 text-[12.5px] text-rose-600 transition hover:bg-rose-50"
-          >
-            Delete project
-          </button>
+          {!props.isNew ? (
+            <button
+              type="button"
+              onClick={() => {
+                if (confirm(`Delete project "${project.name}"?`)) {
+                  props.onRemove();
+                  props.onClose();
+                }
+              }}
+              className="inline-flex h-8 items-center gap-1 rounded-md border border-rose-200 bg-white px-3 text-[12.5px] text-rose-600 transition hover:bg-rose-50"
+            >
+              Delete project
+            </button>
+          ) : (
+            <span />
+          )}
           <button
             type="button"
             onClick={props.onClose}
@@ -2555,6 +2870,18 @@ function ProjectPicker(props: {
           />
           <span className="font-semibold uppercase tracking-[0.06em] text-ink-600">PTO</span>
           <span className="ml-auto text-[11px] text-ink-400">time off</span>
+        </button>
+        <button
+          className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[13px] text-ink-700 transition hover:bg-ink-100"
+          onClick={() => props.onPick(UNAVAILABLE_ID)}
+          title="Mark this person as not available this week"
+        >
+          <span
+            className="inline-block h-3.5 w-3.5 rounded-full border border-ink-400/70 bg-ink-300"
+            aria-hidden
+          />
+          <span className="font-semibold uppercase tracking-[0.06em] text-ink-600">N/A</span>
+          <span className="ml-auto text-[11px] text-ink-400">not available</span>
         </button>
         {props.projects.length > 0 && (
           <div className="my-1.5 border-t border-ink-100" />
