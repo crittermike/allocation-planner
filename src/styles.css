@@ -85,6 +85,18 @@ html, body, #root {
   margin: 0;
 }
 
+/* Restore pointer cursor on interactive elements. Tailwind v4 dropped the
+ * default cursor:pointer on buttons; reapply for anything that looks
+ * clickable so the affordance matches the visual. */
+button:not(:disabled),
+[role="button"]:not(:disabled),
+a[href],
+summary,
+label[for],
+select:not(:disabled) {
+  cursor: pointer;
+}
+
 body {
   font-family: var(--font-sans);
   font-size: 13px;

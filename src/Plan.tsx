@@ -248,7 +248,7 @@ export default function Plan({ slug }: { slug: string }) {
             No plan exists at <span className="font-mono">/{slug}</span>.
           </p>
           <button
-            className="mt-5 inline-flex h-9 items-center rounded-lg bg-gradient-to-b from-brand-600 to-brand-700 px-4 text-[13px] font-semibold text-[#fff] shadow-sm transition hover:from-brand-700 active:scale-[0.98]"
+            className="mt-5 inline-flex h-9 items-center rounded-lg bg-brand-600 px-4 text-[13px] font-semibold text-[#fff] shadow-sm transition hover:bg-brand-700 active:scale-[0.98]"
             onClick={() => navigate('/')}
           >
             ← Back to plans
@@ -857,7 +857,7 @@ function PlanView({
             )}
             <span className="flex-1" />
             <button
-              className="inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-md bg-gradient-to-b from-brand-600 to-brand-700 px-3 text-[12px] font-semibold text-[#fff] shadow-sm transition hover:from-brand-700 hover:to-brand-700 active:scale-[0.98]"
+              className="inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-md bg-brand-600 px-3 text-[12px] font-semibold text-[#fff] shadow-sm transition hover:bg-brand-700 active:scale-[0.98]"
               onClick={() => {
                 if (panel.collapsed) setPanel(p => ({ ...p, collapsed: false }));
                 const id = addProject();
@@ -2890,7 +2890,7 @@ function ProjectEditModal(props: {
           <button
             type="button"
             onClick={props.onClose}
-            className="inline-flex h-8 items-center gap-1 rounded-md bg-gradient-to-b from-brand-600 to-brand-700 px-4 text-[12.5px] font-semibold text-[#fff] shadow-sm transition hover:from-brand-700 hover:to-brand-700 active:scale-[0.98]"
+            className="inline-flex h-8 items-center gap-1 rounded-md bg-brand-600 px-4 text-[12.5px] font-semibold text-[#fff] shadow-sm transition hover:bg-brand-700 active:scale-[0.98]"
           >
             Done
           </button>
