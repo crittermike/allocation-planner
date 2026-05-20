@@ -602,9 +602,9 @@ function PlanView({
   const [transposed, setTransposed] = useState<boolean>(() => {
     try {
       const stored = localStorage.getItem(TRANSPOSED_KEY);
-      return stored === null ? true : stored === '1';
+      return stored === null ? false : stored === '1';
     } catch {
-      return true;
+      return false;
     }
   });
   const [editingProjectId, setEditingProjectId] = useState<ID | null>(null);
