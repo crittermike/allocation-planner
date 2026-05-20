@@ -28,6 +28,7 @@ type State = {
 const PANEL_KEY = 'gantt-maker-panel-v1';
 const TRANSPOSED_KEY = 'gantt-maker-transposed-v1';
 const COLLAPSED_ITERATIONS_KEY = 'gantt-maker-collapsed-iterations-v1';
+const DARK_MODE_KEY = 'gantt-maker-dark-v1';
 
 /** Soft, characterful palette — paired bg + ink colors for legible chips. */
 const PALETTE = [
@@ -237,7 +238,7 @@ export default function Plan({ slug }: { slug: string }) {
             No plan exists at <span className="font-mono">/{slug}</span>.
           </p>
           <button
-            className="mt-5 inline-flex h-9 items-center rounded-lg bg-gradient-to-b from-brand-600 to-brand-700 px-4 text-[13px] font-semibold text-white shadow-sm transition hover:from-brand-700 active:scale-[0.98]"
+            className="mt-5 inline-flex h-9 items-center rounded-lg bg-gradient-to-b from-brand-600 to-brand-700 px-4 text-[13px] font-semibold text-[#fff] shadow-sm transition hover:from-brand-700 active:scale-[0.98]"
             onClick={() => navigate('/')}
           >
             ← Back to plans
@@ -613,6 +614,21 @@ function PlanView({
       return false;
     }
   });
+  const [darkMode, setDarkMode] = useState<boolean>(() => {
+    try {
+      const stored = localStorage.getItem(DARK_MODE_KEY);
+      if (stored !== null) return stored === '1';
+      return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false;
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    const root = document.documentElement;
+    if (darkMode) root.classList.add('dark');
+    else root.classList.remove('dark');
+    try { localStorage.setItem(DARK_MODE_KEY, darkMode ? '1' : '0'); } catch {}
+  }, [darkMode]);
   const [editingProjectId, setEditingProjectId] = useState<ID | null>(null);
   const [isAddingProject, setIsAddingProject] = useState(false);
   const [highlightedProjectId, setHighlightedProjectId] = useState<ID | null>(null);
@@ -713,21 +729,20 @@ function PlanView({
           onBlur={onTextBlur}
         />
         <Presence conn={conn} peers={peers} />
-        <ToolbarButton subtle onClick={addPastIteration} title="Add an iteration before the first one">
-          ← Past iteration
-        </ToolbarButton>
-        <ToolbarButton onClick={addIteration}>+ Iteration</ToolbarButton>
-        <ToolbarButton onClick={() => addPerson()}>+ Person</ToolbarButton>
-        <ToolbarButton
-          subtle
-          onClick={() => setTransposed(t => !t)}
-          title={transposed ? 'Switch back to people-as-rows view' : 'Swap rows and columns (weeks as rows)'}
-        >
-          {transposed ? '⇆ People as rows' : '⇆ Weeks as rows'}
-        </ToolbarButton>
-        <ToolbarButton subtle disabled={undoLen === 0} onClick={undo} title="Undo (Ctrl+Z)">↩ Undo</ToolbarButton>
-        <ToolbarButton subtle disabled={redoLen === 0} onClick={redo} title="Redo (Ctrl+Shift+Z)">↪ Redo</ToolbarButton>
-        <ToolbarButton subtle onClick={clearAssignments}>Clear chart</ToolbarButton>
+        <ToolbarButton onClick={addIteration} title="Add a new iteration after the last one">+ Iteration</ToolbarButton>
+        <ToolbarButton onClick={() => addPerson()} title="Add a new person">+ Person</ToolbarButton>
+        <div className="mx-1 h-5 w-px bg-ink-200" aria-hidden />
+        <IconToolbarButton disabled={undoLen === 0} onClick={undo} title="Undo (⌘Z)" label="Undo">↩</IconToolbarButton>
+        <IconToolbarButton disabled={redoLen === 0} onClick={redo} title="Redo (⇧⌘Z)" label="Redo">↪</IconToolbarButton>
+        <OverflowMenu
+          items={[
+            { label: '← Add past iteration', onClick: addPastIteration, title: 'Add an iteration before the first one' },
+            { label: transposed ? '⇆ People as rows' : '⇆ Weeks as rows', onClick: () => setTransposed(t => !t), title: transposed ? 'Switch back to people-as-rows view' : 'Swap rows and columns (weeks as rows)' },
+            { label: darkMode ? '☀ Light mode' : '☾ Dark mode', onClick: () => setDarkMode(d => !d), title: darkMode ? 'Switch to light mode' : 'Switch to dark mode' },
+            { divider: true },
+            { label: 'Clear chart', onClick: clearAssignments, danger: true, title: 'Remove all assignments' },
+          ]}
+        />
       </div>
 
       <div className={'flex min-h-0 flex-1 ' + (transposed ? 'flex-row' : 'flex-col')}>
@@ -834,7 +849,7 @@ function PlanView({
             )}
             <span className="flex-1" />
             <button
-              className="inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-md bg-gradient-to-b from-brand-600 to-brand-700 px-3 text-[12px] font-semibold text-white shadow-sm transition hover:from-brand-700 hover:to-brand-700 active:scale-[0.98]"
+              className="inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-md bg-gradient-to-b from-brand-600 to-brand-700 px-3 text-[12px] font-semibold text-[#fff] shadow-sm transition hover:from-brand-700 hover:to-brand-700 active:scale-[0.98]"
               onClick={() => {
                 if (panel.collapsed) setPanel(p => ({ ...p, collapsed: false }));
                 const id = addProject();
@@ -943,6 +958,99 @@ function ToolbarButton(props: {
     <button className={base + ' ' + styled} onClick={props.disabled ? undefined : props.onClick} title={props.title} disabled={props.disabled}>
       {props.children}
     </button>
+  );
+}
+
+function IconToolbarButton(props: {
+  children: React.ReactNode;
+  onClick?: () => void;
+  title?: string;
+  disabled?: boolean;
+  label?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={props.disabled ? undefined : props.onClick}
+      title={props.title}
+      disabled={props.disabled}
+      aria-label={props.label}
+      className={
+        'inline-flex h-7 w-7 items-center justify-center rounded-md text-[14px] leading-none transition active:scale-[0.92] ' +
+        (props.disabled
+          ? 'text-ink-300 cursor-not-allowed'
+          : 'text-ink-500 hover:bg-ink-100 hover:text-ink-900')
+      }
+    >
+      {props.children}
+    </button>
+  );
+}
+
+type OverflowItem =
+  | { divider: true; label?: undefined; onClick?: undefined; title?: undefined; danger?: undefined }
+  | { divider?: false; label: string; onClick: () => void; title?: string; danger?: boolean };
+
+function OverflowMenu(props: { items: OverflowItem[] }) {
+  const [open, setOpen] = useState(false);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const popRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (popRef.current?.contains(e.target as Node)) return;
+      if (btnRef.current?.contains(e.target as Node)) return;
+      setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    window.addEventListener('mousedown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', onDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  return (
+    <div className="relative">
+      <button
+        ref={btnRef}
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        title="More options"
+        aria-label="More options"
+        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[16px] leading-none text-ink-500 transition hover:bg-ink-100 hover:text-ink-900 active:scale-[0.92]"
+      >
+        ⋯
+      </button>
+      {open && (
+        <div
+          ref={popRef}
+          className="anim-pop-in absolute right-0 top-9 z-50 w-56 overflow-hidden rounded-xl border border-ink-200 bg-white py-1 shadow-xl shadow-ink-900/10"
+        >
+          {props.items.map((item, i) => {
+            if (item.divider) return <div key={i} className="my-1 border-t border-ink-100" />;
+            return (
+              <button
+                key={i}
+                type="button"
+                title={item.title}
+                onClick={() => { setOpen(false); item.onClick?.(); }}
+                className={
+                  'block w-full px-3 py-1.5 text-left text-[12.5px] transition ' +
+                  (item.danger
+                    ? 'text-rose-600 hover:bg-rose-50'
+                    : 'text-ink-700 hover:bg-ink-100 hover:text-ink-900')
+                }
+              >
+                {item.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1137,7 +1245,7 @@ function Chart(props: {
                     </span>
                     {isCurrent && (
                       <span
-                        className="rounded-full bg-amber-500 px-1.5 py-px text-[9px] font-bold uppercase tracking-[0.08em] text-white"
+                        className="rounded-full bg-amber-500 px-1.5 py-px text-[9px] font-bold uppercase tracking-[0.08em] text-[#fff]"
                         title="Today is in this iteration"
                       >
                         Now
@@ -1478,9 +1586,9 @@ function CollapsedIterationCell(props: {
               style={{
                 width: `${widthPx}px`,
                 background: pto
-                  ? 'repeating-linear-gradient(135deg,#f1f5f9 0 4px,#cbd5e1 4px 8px)'
+                  ? 'repeating-linear-gradient(135deg,var(--pattern-fill-1) 0 4px,var(--color-ink-300) 4px 8px)'
                   : unavail
-                  ? '#94a3b8'
+                  ? 'var(--color-ink-400)'
                   : project.color,
               }}
               aria-hidden
@@ -1811,7 +1919,7 @@ function ChartTransposed(props: {
                   <span>Iter {iterIdx + 1}</span>
                   {isCurrent && (
                     <span
-                      className="rounded-full bg-amber-500 px-1.5 py-px text-[8px] font-bold uppercase tracking-[0.08em] text-white"
+                      className="rounded-full bg-amber-500 px-1.5 py-px text-[8px] font-bold uppercase tracking-[0.08em] text-[#fff]"
                       title="Today is in this iteration"
                     >
                       Now
@@ -1864,7 +1972,7 @@ function ChartTransposed(props: {
                 <span>Iter {iterIdx + 1}</span>
                 {isCurrent && (
                   <span
-                    className="rounded-full bg-amber-500 px-1.5 py-px text-[8px] font-bold uppercase tracking-[0.08em] text-white"
+                    className="rounded-full bg-amber-500 px-1.5 py-px text-[8px] font-bold uppercase tracking-[0.08em] text-[#fff]"
                     title="Today is in this iteration"
                   >
                     Now
@@ -2093,7 +2201,7 @@ function Cell(props: {
   const hasUnavailable = props.assignments.some(a => isUnavailable(a.projectId));
 
   const baseBg = hasUnavailable
-    ? 'bg-[repeating-linear-gradient(135deg,#e2e8f0_0_6px,#f1f5f9_6px_12px)]'
+    ? 'pattern-stripe-soft'
     : props.isCurrentWeek
     ? (props.rowAlt ? 'bg-amber-50/80 hover:bg-amber-50' : 'bg-amber-50/40 hover:bg-amber-50')
     : props.isPastWeek
@@ -2165,7 +2273,7 @@ function Cell(props: {
                 ? 'transparent'
                 : props.extendPreviewProject.color,
               color: isPto(props.extendPreviewProject.id)
-                ? '#475569'
+                ? 'var(--color-ink-600)'
                 : inkFor(props.extendPreviewProject.color),
             }}
           >
@@ -2216,13 +2324,13 @@ function AssignChip(props: {
 }) {
   const { project, isOwnDri, isPto: pto, isUnavailable: unavail } = props;
   const isSentinelChip = pto || unavail;
-  const ink = isSentinelChip ? '#475569' : inkFor(project.color);
+  const ink = isSentinelChip ? 'var(--color-ink-600)' : inkFor(project.color);
   const baseClass =
     'group/chip relative inline-flex max-w-full min-w-0 cursor-grab items-center gap-1 rounded-md px-2.5 py-[3px] pr-3 text-left text-[11px] font-semibold leading-tight transition-transform active:cursor-grabbing hover:-translate-y-px';
   // Softer chip style: white bg with colored left border + subtle tint
   const chipStyle = isSentinelChip
     ? { color: ink }
-    : { background: `color-mix(in srgb, ${project.color} 65%, white)`, color: '#1e293b' };
+    : { background: `color-mix(in srgb, ${project.color} 65%, var(--chip-mix))`, color: 'var(--chip-text)' };
   const mutedStyle = props.muted
     ? { ...chipStyle, filter: 'saturate(0.55)', opacity: 0.72 }
     : chipStyle;
@@ -2244,7 +2352,7 @@ function AssignChip(props: {
         baseClass +
         ' ' +
         (pto
-          ? 'border border-dashed border-ink-400/60 bg-[repeating-linear-gradient(135deg,#f1f5f9_0_6px,#e2e8f0_6px_12px)] uppercase tracking-[0.06em]'
+          ? 'border border-dashed border-ink-400/60 pattern-stripe-soft-rev uppercase tracking-[0.06em]'
           : unavail
           ? 'border border-ink-400/60 bg-ink-300 uppercase tracking-[0.06em]'
           : 'border border-ink-200/80 shadow-[0_1px_2px_rgba(15,23,42,0.04)]') +
@@ -2772,7 +2880,7 @@ function ProjectEditModal(props: {
           <button
             type="button"
             onClick={props.onClose}
-            className="inline-flex h-8 items-center gap-1 rounded-md bg-gradient-to-b from-brand-600 to-brand-700 px-4 text-[12.5px] font-semibold text-white shadow-sm transition hover:from-brand-700 hover:to-brand-700 active:scale-[0.98]"
+            className="inline-flex h-8 items-center gap-1 rounded-md bg-gradient-to-b from-brand-600 to-brand-700 px-4 text-[12.5px] font-semibold text-[#fff] shadow-sm transition hover:from-brand-700 hover:to-brand-700 active:scale-[0.98]"
           >
             Done
           </button>
@@ -2893,7 +3001,7 @@ function ProjectPicker(props: {
           title="Mark this week as PTO (not a project)"
         >
           <span
-            className="inline-block h-3.5 w-3.5 rounded-full border border-ink-300/70 bg-[repeating-linear-gradient(135deg,#f1f5f9_0_3px,#e2e8f0_3px_6px)]"
+            className="inline-block h-3.5 w-3.5 rounded-full border border-ink-300/70 pattern-stripe-dense"
             aria-hidden
           />
           <span className="font-semibold uppercase tracking-[0.06em] text-ink-600">PTO</span>
