@@ -616,9 +616,7 @@ function PlanView({
   });
   const [darkMode, setDarkMode] = useState<boolean>(() => {
     try {
-      const stored = localStorage.getItem(DARK_MODE_KEY);
-      if (stored !== null) return stored === '1';
-      return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false;
+      return localStorage.getItem(DARK_MODE_KEY) === '1';
     } catch {
       return false;
     }
@@ -713,7 +711,7 @@ function PlanView({
     <>
     <div className="flex h-screen w-screen flex-col">
       {/* Toolbar */}
-      <div className="relative z-10 flex items-center gap-2 border-b border-ink-200/80 bg-white/70 px-4 py-2.5 backdrop-blur-md">
+      <div className="relative z-30 flex items-center gap-2 border-b border-ink-200/80 bg-white/70 px-4 py-2.5 backdrop-blur-md">
         <button
           onClick={() => navigate('/')}
           className="mr-1 inline-flex h-7 items-center gap-1 rounded-md px-2 text-[12px] font-medium text-ink-500 transition hover:bg-ink-100 hover:text-ink-900"
