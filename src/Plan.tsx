@@ -2199,8 +2199,11 @@ function AssignChip(props: {
   const isSentinelChip = pto || unavail;
   const ink = isSentinelChip ? '#475569' : inkFor(project.color);
   const baseClass =
-    'group/chip relative inline-flex max-w-full min-w-0 cursor-grab items-center gap-1 rounded-full px-2.5 py-[3px] pr-3 text-left text-[11px] font-semibold leading-tight transition-transform active:cursor-grabbing hover:-translate-y-px';
-  const chipStyle = isSentinelChip ? { color: ink } : { background: project.color, color: ink };
+    'group/chip relative inline-flex max-w-full min-w-0 cursor-grab items-center gap-1 rounded-md px-2.5 py-[3px] pr-3 text-left text-[11px] font-semibold leading-tight transition-transform active:cursor-grabbing hover:-translate-y-px';
+  // Softer chip style: white bg with colored left border + subtle tint
+  const chipStyle = isSentinelChip
+    ? { color: ink }
+    : { background: `color-mix(in srgb, ${project.color} 15%, white)`, color: '#1e293b', borderLeft: `3px solid ${project.color}` };
   const mutedStyle = props.muted
     ? { ...chipStyle, filter: 'saturate(0.55)', opacity: 0.72 }
     : chipStyle;
@@ -2225,7 +2228,7 @@ function AssignChip(props: {
           ? 'border border-dashed border-ink-400/60 bg-[repeating-linear-gradient(135deg,#f1f5f9_0_6px,#e2e8f0_6px_12px)] uppercase tracking-[0.06em]'
           : unavail
           ? 'border border-ink-400/60 bg-ink-300 uppercase tracking-[0.06em]'
-          : 'border border-black/[0.06] shadow-[inset_0_1px_0_rgba(255,255,255,0.5),0_1px_1px_rgba(15,23,42,0.05)]') +
+          : 'border border-ink-200/80 shadow-[0_1px_2px_rgba(15,23,42,0.04)]') +
         (project.url && !isSentinelChip ? ' cursor-pointer' : '')
       }
       style={mutedStyle}
@@ -2241,7 +2244,7 @@ function AssignChip(props: {
       ) : (
         isOwnDri && (
           <span
-            className="inline-flex shrink-0 items-center justify-center rounded bg-white/70 px-1 text-[7px] font-bold uppercase tracking-wide"
+            className="inline-flex shrink-0 items-center justify-center rounded bg-amber-100 px-1 text-[7px] font-bold uppercase tracking-wide text-amber-700"
             title="DRI"
           >
             DRI
