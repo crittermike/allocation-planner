@@ -146,10 +146,13 @@ body {
   color: #1e293b;
   border-color: color-mix(in srgb, var(--cc, #888) 30%, #e2e8f0);
 }
+/* Dark mode: rebuild the chip from the project hue at fixed lightness/
+ * saturation so every color stays distinctly itself (instead of muddling
+ * into similar slate tones when mixed with black). */
 .dark .chip-tint {
-  background: color-mix(in srgb, var(--cc, #888) 28%, #0b1220);
-  color: #e2e8f0;
-  border-color: color-mix(in srgb, var(--cc, #888) 35%, #1f2937);
+  background: hsl(from var(--cc, #888) h max(60%, s) 30%);
+  color: #f1f5f9;
+  border-color: hsl(from var(--cc, #888) h max(50%, s) 45%);
 }
 
 /* Diagonal-stripe patterns (PTO / unavailable / N/A) */
