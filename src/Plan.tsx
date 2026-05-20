@@ -1235,7 +1235,7 @@ function Chart(props: {
             <tr key={person.id} className="group/row">
               <td
                 className={
-                  'sticky left-0 z-10 w-[200px] min-w-[200px] border-b border-r-2 border-ink-200 border-r-ink-300 px-3 py-2 align-middle ' +
+                  'sticky left-0 z-10 w-[200px] min-w-[200px] border-b-2 border-r-2 border-ink-200 border-r-ink-300 px-3 py-3 align-middle ' +
                   (rowIdx % 2 === 0 ? 'bg-white' : 'bg-ink-50')
                 }
               >
@@ -2095,11 +2095,11 @@ function Cell(props: {
   const baseBg = hasUnavailable
     ? 'bg-ink-200/60'
     : props.isCurrentWeek
-    ? (props.rowAlt ? 'bg-amber-50/60 hover:bg-amber-50' : 'bg-amber-50/40 hover:bg-amber-50')
+    ? (props.rowAlt ? 'bg-amber-50/80 hover:bg-amber-50' : 'bg-amber-50/40 hover:bg-amber-50')
     : props.isPastWeek
-    ? (props.rowAlt ? 'bg-ink-100/70 hover:bg-ink-100' : 'bg-ink-50/80 hover:bg-ink-100')
+    ? (props.rowAlt ? 'bg-ink-100/80 hover:bg-ink-100' : 'bg-ink-50/80 hover:bg-ink-100')
     : props.rowAlt
-    ? 'bg-ink-50/40 hover:bg-brand-50/40'
+    ? 'bg-ink-50/70 hover:bg-brand-50/40'
     : 'bg-white hover:bg-brand-50/40';
 
   const hasHighlightedProject = props.highlightedProjectId != null &&
@@ -2112,7 +2112,7 @@ function Cell(props: {
       data-pid={props.personId}
       data-wid={props.weekId}
       className={
-        'group/cell relative min-h-[64px] min-w-[160px] cursor-pointer border-b border-r border-ink-200 p-1 align-middle transition-colors ' +
+        'group/cell relative min-h-[64px] min-w-[160px] cursor-pointer border-b-2 border-r border-ink-200 p-1.5 align-middle transition-colors ' +
         baseBg +
         (props.isIterEnd ? ' border-r-2 border-r-ink-300' : '') +
         (hover ? ' !bg-brand-50 ring-2 ring-inset ring-brand-400' : '') +
