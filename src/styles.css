@@ -66,6 +66,8 @@
   --color-brand-700: #c4b5fd;
   --color-amber-50: #422006;
   --color-amber-100: #78350f;
+  --color-amber-400: #d97706;
+  --color-amber-500: #b45309;
   --color-amber-800: #fbbf24;
   --color-rose-50: #4c0519;
   --color-rose-200: #be123c;
@@ -135,6 +137,19 @@ body {
 .dark .chart-card-bg {
   background-image:
     linear-gradient(to right, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+}
+
+/* Project chip tinting — uses --cc set per-chip via inline style, then
+ * mixes against light/dark surface tones to produce a readable pill. */
+.chip-tint {
+  background: color-mix(in srgb, var(--cc, #888) 55%, #ffffff);
+  color: #1e293b;
+  border-color: color-mix(in srgb, var(--cc, #888) 30%, #e2e8f0);
+}
+.dark .chip-tint {
+  background: color-mix(in srgb, var(--cc, #888) 28%, #0b1220);
+  color: #e2e8f0;
+  border-color: color-mix(in srgb, var(--cc, #888) 35%, #1f2937);
 }
 
 /* Diagonal-stripe patterns (PTO / unavailable / N/A) */

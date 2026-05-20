@@ -2322,14 +2322,13 @@ function AssignChip(props: {
 }) {
   const { project, isOwnDri, isPto: pto, isUnavailable: unavail } = props;
   const isSentinelChip = pto || unavail;
-  const ink = isSentinelChip ? 'var(--color-ink-600)' : inkFor(project.color);
+  const ink = isSentinelChip ? 'var(--color-ink-600)' : undefined;
   const baseClass =
     'group/chip relative inline-flex max-w-full min-w-0 cursor-grab items-center gap-1 rounded-md px-2.5 py-[3px] pr-3 text-left text-[11px] font-semibold leading-tight transition-transform active:cursor-grabbing hover:-translate-y-px';
-  // Softer chip style: white bg with colored left border + subtle tint
-  const chipStyle = isSentinelChip
+  const chipStyle: React.CSSProperties = isSentinelChip
     ? { color: ink }
-    : { background: `color-mix(in srgb, ${project.color} 65%, var(--chip-mix))`, color: 'var(--chip-text)' };
-  const mutedStyle = props.muted
+    : ({ ['--cc' as string]: project.color } as React.CSSProperties);
+  const mutedStyle: React.CSSProperties = props.muted
     ? { ...chipStyle, filter: 'saturate(0.55)', opacity: 0.72 }
     : chipStyle;
   return (
@@ -2353,7 +2352,7 @@ function AssignChip(props: {
           ? 'border border-dashed border-ink-400/60 pattern-stripe-soft-rev uppercase tracking-[0.06em]'
           : unavail
           ? 'border border-ink-400/60 bg-ink-300 uppercase tracking-[0.06em]'
-          : 'border border-ink-200/80 shadow-[0_1px_2px_rgba(15,23,42,0.04)]') +
+          : 'chip-tint border shadow-[0_1px_2px_rgba(15,23,42,0.04)]') +
         (project.url && !isSentinelChip ? ' cursor-pointer' : '')
       }
       style={mutedStyle}
