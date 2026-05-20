@@ -2093,7 +2093,7 @@ function Cell(props: {
   const hasUnavailable = props.assignments.some(a => isUnavailable(a.projectId));
 
   const baseBg = hasUnavailable
-    ? 'bg-ink-200/60'
+    ? 'bg-[repeating-linear-gradient(135deg,#e2e8f0_0_6px,#f1f5f9_6px_12px)]'
     : props.isCurrentWeek
     ? (props.rowAlt ? 'bg-amber-50/80 hover:bg-amber-50' : 'bg-amber-50/40 hover:bg-amber-50')
     : props.isPastWeek
@@ -2126,6 +2126,23 @@ function Cell(props: {
       title="Click to add a project, or drag one in"
     >
       <div className="flex min-h-[48px] flex-col items-start justify-center gap-1 px-0.5">
+        {hasUnavailable ? (
+          <div className="flex w-full items-center justify-center">
+            <span
+              className="group/na inline-flex cursor-pointer items-center gap-1 rounded px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-ink-400 transition hover:bg-white/60 hover:text-ink-600"
+              title="Click to remove N/A status"
+              onClick={e => {
+                e.stopPropagation();
+                const ua = props.assignments.find(a => isUnavailable(a.projectId));
+                if (ua) props.onRemove(ua.id);
+              }}
+            >
+              N/A
+              <span className="text-[9px] opacity-0 group-hover/na:opacity-100">×</span>
+            </span>
+          </div>
+        ) : (
+        <>
         {props.assignments.length === 0 && !props.extendPreviewProject && (
           <span
             className={
@@ -2179,6 +2196,8 @@ function Cell(props: {
             />
           );
         })}
+        </>
+        )}
       </div>
     </td>
   );
