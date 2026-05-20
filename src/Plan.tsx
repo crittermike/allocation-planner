@@ -30,18 +30,21 @@ const TRANSPOSED_KEY = 'gantt-maker-transposed-v1';
 const COLLAPSED_ITERATIONS_KEY = 'gantt-maker-collapsed-iterations-v1';
 const DARK_MODE_KEY = 'gantt-maker-dark-v1';
 
-/** Soft, characterful palette — paired bg + ink colors for legible chips. */
+/** Soft, characterful palette — paired bg + ink colors for legible chips.
+ *  darkBg is the dark-mode equivalent (saturated mid-tone), paired with
+ *  light text. Hand-picked so each color stays clearly distinct on a
+ *  dark background. */
 const PALETTE = [
-  { bg: '#fecaca', ink: '#7f1d1d' }, // rose
-  { bg: '#fed7aa', ink: '#7c2d12' }, // orange
-  { bg: '#fef3c7', ink: '#713f12' }, // amber
-  { bg: '#d9f99d', ink: '#365314' }, // lime
-  { bg: '#bbf7d0', ink: '#14532d' }, // green
-  { bg: '#a5f3fc', ink: '#155e75' }, // cyan
-  { bg: '#bfdbfe', ink: '#1e3a8a' }, // blue
-  { bg: '#ddd6fe', ink: '#4c1d95' }, // violet
-  { bg: '#fbcfe8', ink: '#831843' }, // pink
-  { bg: '#e2e8f0', ink: '#1e293b' }, // slate
+  { bg: '#fecaca', ink: '#7f1d1d', darkBg: '#7f1d1d' }, // rose
+  { bg: '#fed7aa', ink: '#7c2d12', darkBg: '#9a3412' }, // orange
+  { bg: '#fef3c7', ink: '#713f12', darkBg: '#854d0e' }, // amber
+  { bg: '#d9f99d', ink: '#365314', darkBg: '#4d7c0f' }, // lime
+  { bg: '#bbf7d0', ink: '#14532d', darkBg: '#166534' }, // green
+  { bg: '#a5f3fc', ink: '#155e75', darkBg: '#155e75' }, // cyan
+  { bg: '#bfdbfe', ink: '#1e3a8a', darkBg: '#1e40af' }, // blue
+  { bg: '#ddd6fe', ink: '#4c1d95', darkBg: '#5b21b6' }, // violet
+  { bg: '#fbcfe8', ink: '#831843', darkBg: '#9d174d' }, // pink
+  { bg: '#e2e8f0', ink: '#1e293b', darkBg: '#475569' }, // slate
 ];
 const COLORS = PALETTE.map(p => p.bg);
 
@@ -49,6 +52,13 @@ const COLORS = PALETTE.map(p => p.bg);
 function inkFor(bg: string): string {
   const m = PALETTE.find(p => p.bg.toLowerCase() === bg.toLowerCase());
   return m ? m.ink : '#1e293b';
+}
+
+/** Look up the dark-mode equivalent for a chip color; falls back to the
+ *  original if it isn't a known palette color. */
+function darkBgFor(bg: string): string {
+  const m = PALETTE.find(p => p.bg.toLowerCase() === bg.toLowerCase());
+  return m ? m.darkBg : bg;
 }
 
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -2327,7 +2337,10 @@ function AssignChip(props: {
     'group/chip relative inline-flex max-w-full min-w-0 cursor-grab items-center gap-1 rounded-md px-2.5 py-[3px] pr-3 text-left text-[11px] font-semibold leading-tight transition-transform active:cursor-grabbing hover:-translate-y-px';
   const chipStyle: React.CSSProperties = isSentinelChip
     ? { color: ink }
-    : ({ ['--cc' as string]: project.color } as React.CSSProperties);
+    : ({
+        ['--cc' as string]: project.color,
+        ['--cc-dark' as string]: darkBgFor(project.color),
+      } as React.CSSProperties);
   const mutedStyle: React.CSSProperties = props.muted
     ? { ...chipStyle, filter: 'saturate(0.55)', opacity: 0.72 }
     : chipStyle;
