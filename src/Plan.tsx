@@ -13,7 +13,7 @@ type Project = {
   url?: string;
   estimatedWeeks?: number;
 };
-type Iteration = { id: ID; startDate: string };
+type Iteration = { id: ID; startDate: string; goal?: string };
 type Assignment = { id: ID; personId: ID; weekId: string; projectId: ID };
 
 type State = {
@@ -522,6 +522,54 @@ function PlanView({
       };
     });
   };
+  const setIterationGoal = (iterationId: ID, goal: string) => {
+    pushUndo();
+    setState(s => ({
+      ...s,
+      iterations: s.iterations.map(i =>
+        i.id === iterationId
+          ? { ...i, goal: goal.trim() ? goal.trim() : undefined }
+          : i,
+      ),
+    }));
+  };
+  const duplicateIteration = (sourceId: ID) => {
+    pushUndo();
+    setState(s => {
+      const src = s.iterations.find(i => i.id === sourceId);
+      if (!src) return s;
+      const lastStart =
+        s.iterations.length === 0
+          ? mondayOf(new Date())
+          : addDays(parseISODate(s.iterations[s.iterations.length - 1].startDate), 14);
+      const newId = uid();
+      const newIter: Iteration = {
+        id: newId,
+        startDate: toISODate(lastStart),
+        goal: src.goal,
+      };
+      const srcW0 = `${sourceId}:0`;
+      const srcW1 = `${sourceId}:1`;
+      const copiedAssignments = s.assignments
+        .filter(a => a.weekId === srcW0 || a.weekId === srcW1)
+        .map(a => ({
+          ...a,
+          id: uid(),
+          weekId: a.weekId === srcW0 ? `${newId}:0` : `${newId}:1`,
+        }));
+      const nextWeekNotes = { ...(s.weekNotes ?? {}) };
+      const srcNote0 = s.weekNotes?.[srcW0];
+      const srcNote1 = s.weekNotes?.[srcW1];
+      if (srcNote0) nextWeekNotes[`${newId}:0`] = srcNote0;
+      if (srcNote1) nextWeekNotes[`${newId}:1`] = srcNote1;
+      return {
+        ...s,
+        iterations: [...s.iterations, newIter],
+        assignments: [...s.assignments, ...copiedAssignments],
+        weekNotes: nextWeekNotes,
+      };
+    });
+  };
   const addAssignment = (personId: ID, weekId: string, projectId: ID) => {
     pushUndo();
     setState(s => {
@@ -772,6 +820,8 @@ function PlanView({
               addPerson={addPerson}
               removeIteration={removeIteration}
               setIterationStart={setIterationStart}
+              setIterationGoal={setIterationGoal}
+              duplicateIteration={duplicateIteration}
               addAssignment={addAssignment}
               moveAssignment={moveAssignment}
               removeAssignment={removeAssignment}
@@ -795,6 +845,8 @@ function PlanView({
               addPerson={addPerson}
               removeIteration={removeIteration}
               setIterationStart={setIterationStart}
+              setIterationGoal={setIterationGoal}
+              duplicateIteration={duplicateIteration}
               addAssignment={addAssignment}
               moveAssignment={moveAssignment}
               removeAssignment={removeAssignment}
@@ -1090,6 +1142,76 @@ function IconButton(props: {
 /* Chart                                                         */
 /* ============================================================ */
 
+const DuplicateIcon = () => (
+  <svg width="11" height="11" viewBox="0 0 14 14" fill="none" aria-hidden>
+    <rect x="4.5" y="4.5" width="7.5" height="7.5" rx="1.2" stroke="currentColor" strokeWidth="1.3" />
+    <path d="M2.5 9.5V3a1 1 0 0 1 1-1H10" stroke="currentColor" strokeWidth="1.3" fill="none" strokeLinecap="round" />
+  </svg>
+);
+
+function IterationGoal(props: {
+  goal?: string;
+  onChange: (s: string) => void;
+  onTextFocus: () => void;
+  onTextBlur: () => void;
+  className?: string;
+  placeholder?: string;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(props.goal ?? '');
+  useEffect(() => {
+    if (!editing) setValue(props.goal ?? '');
+  }, [props.goal, editing]);
+
+  const commit = () => {
+    setEditing(false);
+    props.onTextBlur();
+    if (value.trim() !== (props.goal ?? '')) props.onChange(value);
+  };
+
+  const className = props.className ?? '';
+  if (editing) {
+    return (
+      <input
+        autoFocus
+        value={value}
+        onChange={e => setValue(e.target.value)}
+        onFocus={props.onTextFocus}
+        onBlur={commit}
+        onKeyDown={e => {
+          if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur();
+          if (e.key === 'Escape') {
+            setValue(props.goal ?? '');
+            setEditing(false);
+            props.onTextBlur();
+            (e.currentTarget as HTMLInputElement).blur();
+          }
+        }}
+        placeholder={props.placeholder ?? 'Goal for this iteration…'}
+        className={
+          'min-w-0 rounded border border-current/30 bg-white/40 px-1.5 py-px text-[10.5px] font-medium tracking-normal normal-case outline-none focus:border-current/60 focus:bg-white/70 ' +
+          className
+        }
+        onClick={e => e.stopPropagation()}
+      />
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={e => { e.stopPropagation(); setEditing(true); }}
+      title={props.goal ? 'Edit iteration goal' : 'Add a goal for this iteration'}
+      className={
+        'min-w-0 truncate rounded px-1.5 py-px text-left text-[10.5px] font-medium tracking-normal normal-case transition hover:bg-white/50 ' +
+        (props.goal ? 'opacity-90' : 'italic opacity-50 hover:opacity-80 ') +
+        className
+      }
+    >
+      {props.goal || '+ goal'}
+    </button>
+  );
+}
+
 function Chart(props: {
   state: State;
   allWeeks: WeekInfo[];
@@ -1105,6 +1227,8 @@ function Chart(props: {
   addPerson: (name?: string) => void;
   removeIteration: (id: ID) => void;
   setIterationStart: (id: ID, isoDate: string) => void;
+  setIterationGoal: (id: ID, goal: string) => void;
+  duplicateIteration: (id: ID) => void;
   addAssignment: (personId: ID, weekId: string, projectId: ID) => void;
   moveAssignment: (assignmentId: ID, personId: ID, weekId: string) => void;
   removeAssignment: (id: ID) => void;
@@ -1220,7 +1344,7 @@ function Chart(props: {
                   data-iter-id={iter.id}
                   colSpan={isCollapsed ? 1 : 2}
                   className={
-                    'sticky top-0 z-20 h-9 border-b-2 border-r-2 px-2 text-[11px] font-semibold uppercase tracking-[0.08em] ' +
+                    'sticky top-0 z-20 border-b-2 border-r-2 px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.08em] ' +
                     (isCurrent
                       ? 'border-amber-500 border-r-amber-400/70 bg-amber-100 text-amber-800'
                       : isPast
@@ -1230,6 +1354,7 @@ function Chart(props: {
                             : 'border-ink-200 border-r-ink-300 bg-indigo-50 text-indigo-700'))
                   }
                 >
+                  <div className="flex flex-col items-center gap-0.5">
                   <div className="flex items-center justify-center gap-1.5">
                     <button
                       type="button"
@@ -1279,6 +1404,13 @@ function Chart(props: {
                       />
                     </label>
                     <button
+                      onClick={() => props.duplicateIteration(iter.id)}
+                      title="Duplicate this iteration (copies all assignments to a new iteration at the end)"
+                      className="inline-flex h-4 w-4 items-center justify-center rounded text-current opacity-50 transition hover:bg-white/50 hover:opacity-100"
+                    >
+                      <DuplicateIcon />
+                    </button>
+                    <button
                       onClick={() => {
                         if (confirm('Remove this iteration (both weeks)?')) props.removeIteration(iter.id);
                       }}
@@ -1287,6 +1419,16 @@ function Chart(props: {
                     >
                       ×
                     </button>
+                  </div>
+                  {!isCollapsed && (
+                    <IterationGoal
+                      goal={iter.goal}
+                      onChange={g => props.setIterationGoal(iter.id, g)}
+                      onTextFocus={props.onTextFocus}
+                      onTextBlur={props.onTextBlur}
+                      className="max-w-full"
+                    />
+                  )}
                   </div>
                 </th>
               );
@@ -1735,6 +1877,8 @@ function ChartTransposed(props: {
   addPerson: (name?: string) => void;
   removeIteration: (id: ID) => void;
   setIterationStart: (id: ID, isoDate: string) => void;
+  setIterationGoal: (id: ID, goal: string) => void;
+  duplicateIteration: (id: ID) => void;
   addAssignment: (personId: ID, weekId: string, projectId: ID) => void;
   moveAssignment: (assignmentId: ID, personId: ID, weekId: string) => void;
   removeAssignment: (id: ID) => void;
@@ -1955,6 +2099,13 @@ function ChartTransposed(props: {
                     />
                   </label>
                   <button
+                    onClick={() => props.duplicateIteration(iter.id)}
+                    title="Duplicate this iteration (copies all assignments to a new iteration at the end)"
+                    className="inline-flex h-4 w-4 items-center justify-center rounded text-current opacity-50 transition hover:bg-white/50 hover:opacity-100"
+                  >
+                    <DuplicateIcon />
+                  </button>
+                  <button
                     onClick={() => {
                       if (confirm('Remove this iteration (both weeks)?')) props.removeIteration(iter.id);
                     }}
@@ -1964,6 +2115,15 @@ function ChartTransposed(props: {
                     ×
                   </button>
                 </div>
+                {!isCollapsed && (
+                  <IterationGoal
+                    goal={iter.goal}
+                    onChange={g => props.setIterationGoal(iter.id, g)}
+                    onTextFocus={props.onTextFocus}
+                    onTextBlur={props.onTextBlur}
+                    className="max-w-[140px]"
+                  />
+                )}
               </div>
             );
             const compactIterationControls = (
@@ -2005,6 +2165,13 @@ function ChartTransposed(props: {
                     aria-label="Iteration start date"
                   />
                 </label>
+                <button
+                  onClick={() => props.duplicateIteration(iter.id)}
+                  title="Duplicate this iteration (copies all assignments to a new iteration at the end)"
+                  className="inline-flex h-4 w-4 items-center justify-center rounded text-current opacity-50 transition hover:bg-white/50 hover:opacity-100"
+                >
+                  <DuplicateIcon />
+                </button>
                 <button
                   onClick={() => {
                     if (confirm('Remove this iteration (both weeks)?')) props.removeIteration(iter.id);
@@ -2446,10 +2613,21 @@ function ProjectsTable(props: {
 }) {
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
   const [sortDir, setSortDir] = useState<SortDir>('asc');
+  const [search, setSearch] = useState('');
+
+  const filteredProjects = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return props.projects;
+    return props.projects.filter(p => {
+      if (p.name.toLowerCase().includes(q)) return true;
+      if (p.url && p.url.toLowerCase().includes(q)) return true;
+      return false;
+    });
+  }, [props.projects, search]);
 
   const sortedProjects = useMemo(() => {
-    if (!sortKey) return props.projects;
-    const arr = [...props.projects];
+    if (!sortKey) return filteredProjects;
+    const arr = [...filteredProjects];
     const dir = sortDir === 'asc' ? 1 : -1;
     arr.sort((a, b) => {
       let av: number | string;
@@ -2469,7 +2647,7 @@ function ProjectsTable(props: {
       return 0;
     });
     return arr;
-  }, [props.projects, props.plannedByProject, sortKey, sortDir]);
+  }, [filteredProjects, props.plannedByProject, sortKey, sortDir]);
 
   const totals = useMemo(() => {
     let planned = 0;
@@ -2510,6 +2688,37 @@ function ProjectsTable(props: {
   return (
     <div className="flex flex-col">
       <div className="sticky top-0 z-10 flex flex-wrap items-center gap-2 border-b border-ink-200 bg-ink-50/80 px-3 py-2 backdrop-blur">
+        <div className="relative">
+          <input
+            type="text"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search projects…"
+            aria-label="Search projects"
+            className="h-7 w-44 rounded-md border border-ink-200 bg-white pl-7 pr-6 text-[12px] text-ink-700 placeholder:text-ink-400 outline-none transition focus:border-brand-400 focus:ring-2 focus:ring-brand-200"
+          />
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 14 14"
+            className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-ink-400"
+            aria-hidden
+          >
+            <circle cx="6" cy="6" r="3.75" stroke="currentColor" strokeWidth="1.3" fill="none" />
+            <path d="M9 9l3 3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+          </svg>
+          {search && (
+            <button
+              type="button"
+              onClick={() => setSearch('')}
+              title="Clear search"
+              aria-label="Clear search"
+              className="absolute right-1 top-1/2 inline-flex h-4 w-4 -translate-y-1/2 items-center justify-center rounded text-ink-400 hover:bg-ink-100 hover:text-ink-700"
+            >
+              ×
+            </button>
+          )}
+        </div>
         <span className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-ink-500">Sort:</span>
         {sortBtn('Project', 'name')}
         {sortBtn('Est.', 'estimated', totals.estimated > 0 && (
@@ -2524,8 +2733,24 @@ function ProjectsTable(props: {
       {sortedProjects.length === 0 && (
         <div className="px-6 py-12 text-center">
           <div className="mx-auto max-w-sm text-ink-500">
-            <div className="mb-2 text-[20px]">🗂️</div>
-            <div className="text-[13px]">No projects yet. Click <span className="rounded bg-ink-100 px-1.5 py-0.5 font-semibold">+ Add project</span> above to create one.</div>
+            {search.trim() ? (
+              <>
+                <div className="mb-2 text-[20px]">🔍</div>
+                <div className="text-[13px]">No projects match <span className="font-semibold text-ink-700">“{search.trim()}”</span>.</div>
+                <button
+                  type="button"
+                  onClick={() => setSearch('')}
+                  className="mt-3 inline-flex items-center rounded-md border border-ink-200 bg-white px-2.5 py-1 text-[11.5px] font-medium text-ink-600 hover:border-brand-300 hover:text-brand-700"
+                >
+                  Clear search
+                </button>
+              </>
+            ) : (
+              <>
+                <div className="mb-2 text-[20px]">🗂️</div>
+                <div className="text-[13px]">No projects yet. Click <span className="rounded bg-ink-100 px-1.5 py-0.5 font-semibold">+ Add project</span> above to create one.</div>
+              </>
+            )}
           </div>
         </div>
       )}
