@@ -2222,7 +2222,7 @@ function AssignChip(props: {
   // Softer chip style: white bg with colored left border + subtle tint
   const chipStyle = isSentinelChip
     ? { color: ink }
-    : { background: `color-mix(in srgb, ${project.color} 40%, white)`, color: '#1e293b', borderLeft: `3px solid ${project.color}` };
+    : { background: `color-mix(in srgb, ${project.color} 65%, white)`, color: '#1e293b' };
   const mutedStyle = props.muted
     ? { ...chipStyle, filter: 'saturate(0.55)', opacity: 0.72 }
     : chipStyle;
