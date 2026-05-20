@@ -271,6 +271,12 @@ function PlanView({
   conn: ConnState;
   peers: number;
 }) {
+  // Set page title to plan name
+  useEffect(() => {
+    document.title = state.title ? `${state.title} — Allocation Planner` : 'Allocation Planner';
+    return () => { document.title = 'Allocation Planner'; };
+  }, [state.title]);
+
   const projectsById = useMemo(
     () => Object.fromEntries(state.projects.map(p => [p.id, p])),
     [state.projects],
