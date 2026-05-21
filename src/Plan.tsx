@@ -1498,6 +1498,13 @@ function Chart(props: {
                 }
               >
                 <div className="flex items-center gap-1">
+                  <input
+                    value={person.name}
+                    onChange={e => props.renamePerson(person.id, e.target.value)}
+                    onFocus={props.onTextFocus}
+                    onBlur={props.onTextBlur}
+                    className="min-w-0 flex-1 rounded border border-transparent bg-transparent px-2 py-1 text-[13px] font-medium text-ink-900 outline-none transition hover:bg-white hover:shadow-sm focus:border-ink-300 focus:bg-white focus:ring-2 focus:ring-brand-200"
+                  />
                   <div className="flex flex-col opacity-0 group-hover/row:opacity-100">
                     <button
                       type="button"
@@ -1514,13 +1521,6 @@ function Chart(props: {
                       title="Move down"
                     >▼</button>
                   </div>
-                  <input
-                    value={person.name}
-                    onChange={e => props.renamePerson(person.id, e.target.value)}
-                    onFocus={props.onTextFocus}
-                    onBlur={props.onTextBlur}
-                    className="min-w-0 flex-1 rounded border border-transparent bg-transparent px-2 py-1 text-[13px] font-medium text-ink-900 outline-none transition hover:bg-white hover:shadow-sm focus:border-ink-300 focus:bg-white focus:ring-2 focus:ring-brand-200"
-                  />
                   <IconButton
                     danger
                     title="Remove person"
@@ -2170,6 +2170,13 @@ function ChartTransposed(props: {
                 className="group/col sticky top-0 z-20 h-9 min-w-[140px] border-b border-r border-ink-200 bg-ink-50 px-2 py-1 text-left align-middle"
               >
                 <div className="flex items-center gap-1">
+                  <input
+                    value={person.name}
+                    onChange={e => props.renamePerson(person.id, e.target.value)}
+                    onFocus={props.onTextFocus}
+                    onBlur={props.onTextBlur}
+                    className="min-w-0 flex-1 rounded border border-transparent bg-transparent px-2 py-1 text-[12.5px] font-semibold text-ink-900 outline-none transition hover:bg-white hover:shadow-sm focus:border-ink-300 focus:bg-white focus:ring-2 focus:ring-brand-200"
+                  />
                   <div className="flex opacity-0 group-hover/col:opacity-100">
                     <button
                       type="button"
@@ -2186,13 +2193,6 @@ function ChartTransposed(props: {
                       title="Move right"
                     >▶</button>
                   </div>
-                  <input
-                    value={person.name}
-                    onChange={e => props.renamePerson(person.id, e.target.value)}
-                    onFocus={props.onTextFocus}
-                    onBlur={props.onTextBlur}
-                    className="min-w-0 flex-1 rounded border border-transparent bg-transparent px-2 py-1 text-[12.5px] font-semibold text-ink-900 outline-none transition hover:bg-white hover:shadow-sm focus:border-ink-300 focus:bg-white focus:ring-2 focus:ring-brand-200"
-                  />
                   <IconButton
                     danger
                     title="Remove person"
