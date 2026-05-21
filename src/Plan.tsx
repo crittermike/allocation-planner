@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { navigate } from './router';
 import { usePlan, type ConnState } from './usePlan';
 
@@ -1827,35 +1827,224 @@ function WeekNoteTextarea(props: {
   onFocus?: () => void;
   onBlur?: () => void;
 }) {
+  const [editing, setEditing] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
+
+  const minH = props.compact ? 48 : 64;
 
   const autoGrow = useCallback(() => {
     const el = ref.current;
     if (!el) return;
     el.style.height = 'auto';
-    el.style.height = `${Math.max(el.scrollHeight, props.compact ? 48 : 64)}px`;
-  }, [props.compact]);
+    el.style.height = `${Math.max(el.scrollHeight, minH)}px`;
+  }, [minH]);
 
-  useEffect(autoGrow, [props.value, autoGrow]);
+  useEffect(() => {
+    if (editing) autoGrow();
+  }, [editing, props.value, autoGrow]);
 
+  if (editing) {
+    return (
+      <textarea
+        ref={ref}
+        autoFocus
+        value={props.value}
+        onChange={e => props.onChange(e.target.value)}
+        onInput={autoGrow}
+        onFocus={props.onFocus}
+        onBlur={() => {
+          setEditing(false);
+          props.onBlur?.();
+        }}
+        placeholder="Notes… (supports markdown)"
+        title={props.title}
+        rows={1}
+        className={
+          'block w-full resize-none rounded-lg border border-brand-300 bg-white px-2.5 py-2 font-mono text-[12px] leading-relaxed outline-none ring-2 ring-brand-200 transition placeholder:text-ink-300/60 ' +
+          (props.muted ? 'text-ink-500' : 'text-ink-700')
+        }
+        style={{ overflow: 'hidden' }}
+      />
+    );
+  }
+
+  const hasValue = props.value.trim().length > 0;
   return (
-    <textarea
-      ref={ref}
-      value={props.value}
-      onChange={e => props.onChange(e.target.value)}
-      onInput={autoGrow}
-      onFocus={props.onFocus}
-      onBlur={props.onBlur}
-      placeholder="Notes…"
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={e => {
+        if ((e.target as HTMLElement).closest('a')) return;
+        setEditing(true);
+      }}
+      onKeyDown={e => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          setEditing(true);
+        }
+      }}
       title={props.title}
-      rows={1}
+      style={{ minHeight: minH }}
       className={
-        'block w-full resize-none rounded-lg border border-transparent bg-transparent px-2.5 py-2 text-[13px] leading-relaxed outline-none transition placeholder:text-ink-300/60 hover:bg-white hover:shadow-sm focus:border-brand-300 focus:bg-white focus:ring-2 focus:ring-brand-200 ' +
+        'block w-full cursor-text break-words rounded-lg border border-transparent px-2.5 py-2 text-[13px] leading-relaxed transition hover:border-ink-200 hover:bg-white hover:shadow-sm ' +
         (props.muted ? 'text-ink-500' : 'text-ink-700')
       }
-      style={{ overflow: 'hidden' }}
-    />
+    >
+      {hasValue ? <MarkdownText text={props.value} /> : <span className="text-ink-300/60">Notes…</span>}
+    </div>
   );
+}
+
+/* ---- tiny inline markdown renderer (no deps) ---- */
+
+const linkClass =
+  'text-brand-600 underline decoration-brand-300 underline-offset-2 hover:text-brand-700 hover:decoration-brand-500';
+
+function MarkdownText({ text }: { text: string }) {
+  const lines = text.split('\n');
+  const blocks: React.ReactNode[] = [];
+  let bullets: string[] | null = null;
+  let nodeKey = 0;
+
+  const flushBullets = () => {
+    if (bullets && bullets.length) {
+      blocks.push(
+        <ul key={`ul-${nodeKey++}`} className="ml-4 list-disc space-y-0.5">
+          {bullets.map((b, i) => (
+            <li key={i}>{renderInline(b)}</li>
+          ))}
+        </ul>,
+      );
+    }
+    bullets = null;
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const m = /^\s*[-*]\s+(.*)$/.exec(line);
+    if (m) {
+      if (!bullets) bullets = [];
+      bullets.push(m[1]);
+      continue;
+    }
+    flushBullets();
+    if (line.trim() === '') {
+      blocks.push(<div key={`gap-${nodeKey++}`} className="h-2" />);
+    } else {
+      blocks.push(<div key={`l-${nodeKey++}`}>{renderInline(line)}</div>);
+    }
+  }
+  flushBullets();
+  return <>{blocks}</>;
+}
+
+type InlineMatch = { start: number; end: number; node: React.ReactNode };
+type InlineFinder = (s: string) => InlineMatch | null;
+
+const INLINE_FINDERS: InlineFinder[] = [
+  s => {
+    const m = /`([^`\n]+)`/.exec(s);
+    if (!m) return null;
+    return {
+      start: m.index,
+      end: m.index + m[0].length,
+      node: <code className="rounded bg-ink-100 px-1 py-px font-mono text-[12px] text-ink-700">{m[1]}</code>,
+    };
+  },
+  s => {
+    const m = /\[([^\]\n]+)\]\((https?:\/\/[^)\s]+|mailto:[^)\s]+)\)/.exec(s);
+    if (!m) return null;
+    return {
+      start: m.index,
+      end: m.index + m[0].length,
+      node: (
+        <a
+          href={m[2]}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={e => e.stopPropagation()}
+          className={linkClass}
+        >
+          {renderInline(m[1])}
+        </a>
+      ),
+    };
+  },
+  s => {
+    const m = /\*\*([^*\n]+?)\*\*/.exec(s);
+    if (!m) return null;
+    return {
+      start: m.index,
+      end: m.index + m[0].length,
+      node: <strong className="font-semibold">{renderInline(m[1])}</strong>,
+    };
+  },
+  s => {
+    const m = /(?<!\*)\*([^*\n]+?)\*(?!\*)/.exec(s);
+    if (!m) return null;
+    return {
+      start: m.index,
+      end: m.index + m[0].length,
+      node: <em>{renderInline(m[1])}</em>,
+    };
+  },
+  s => {
+    const m = /~~([^~\n]+?)~~/.exec(s);
+    if (!m) return null;
+    return {
+      start: m.index,
+      end: m.index + m[0].length,
+      node: <span className="line-through opacity-70">{renderInline(m[1])}</span>,
+    };
+  },
+  s => {
+    const m = /(https?:\/\/[^\s<>"')\]]+|www\.[^\s<>"')\]]+)/.exec(s);
+    if (!m) return null;
+    let url = m[1];
+    while (/[.,;:!?]$/.test(url)) url = url.slice(0, -1);
+    if (!url) return null;
+    const href = url.startsWith('http') ? url : `https://${url}`;
+    return {
+      start: m.index,
+      end: m.index + url.length,
+      node: (
+        <a
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={e => e.stopPropagation()}
+          className={linkClass}
+        >
+          {url}
+        </a>
+      ),
+    };
+  },
+];
+
+function renderInline(text: string): React.ReactNode[] {
+  if (!text) return [];
+  let first: InlineMatch | null = null;
+  for (const find of INLINE_FINDERS) {
+    const m = find(text);
+    if (m && (!first || m.start < first.start)) first = m;
+  }
+  if (!first) return [text];
+  const parts: React.ReactNode[] = [];
+  if (first.start > 0) parts.push(text.slice(0, first.start));
+  parts.push(<React.Fragment key={`m-${first.start}`}>{first.node}</React.Fragment>);
+  if (first.end < text.length) {
+    const tail = renderInline(text.slice(first.end));
+    for (let i = 0; i < tail.length; i++) {
+      const item = tail[i];
+      parts.push(
+        typeof item === 'string'
+          ? item
+          : <React.Fragment key={`t-${first.end}-${i}`}>{item}</React.Fragment>,
+      );
+    }
+  }
+  return parts;
 }
 
 /* ============================================================ */
