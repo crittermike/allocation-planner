@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { navigate } from './router';
-import { usePlan, type ConnState } from './usePlan';
+import { usePlan, type ConnState, type PasswordError } from './usePlan';
 
 type ID = string;
 
@@ -237,7 +237,17 @@ const collectIterationNotes = (
 /* ============================================================ */
 
 export default function Plan({ slug }: { slug: string }) {
-  const { state: liveState, setState: setLiveState, conn, peers } = usePlan(slug);
+  const {
+    state: liveState,
+    setState: setLiveState,
+    conn,
+    peers,
+    passwordRequired,
+    planName,
+    hasPassword,
+    submitPassword,
+    changePassword,
+  } = usePlan(slug);
 
   if (conn === 'missing') {
     return (
@@ -258,6 +268,10 @@ export default function Plan({ slug }: { slug: string }) {
     );
   }
 
+  if (passwordRequired) {
+    return <UnlockPrompt slug={slug} name={planName} onSubmit={submitPassword} />;
+  }
+
   if (!liveState) {
     return (
       <div className="flex h-screen w-screen items-center justify-center text-[13px] text-ink-500">
@@ -266,7 +280,99 @@ export default function Plan({ slug }: { slug: string }) {
     );
   }
 
-  return <PlanView slug={slug} state={liveState} setState={setLiveState} conn={conn} peers={peers} />;
+  return (
+    <PlanView
+      slug={slug}
+      state={liveState}
+      setState={setLiveState}
+      conn={conn}
+      peers={peers}
+      hasPassword={hasPassword}
+      changePassword={changePassword}
+    />
+  );
+}
+
+function UnlockPrompt({
+  slug,
+  name,
+  onSubmit,
+}: {
+  slug: string;
+  name: string | null;
+  onSubmit: (pw: string) => Promise<{ ok: true } | { ok: false; error: PasswordError; message?: string }>;
+}) {
+  const [pw, setPw] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pw || submitting) return;
+    setSubmitting(true);
+    setErr(null);
+    const result = await onSubmit(pw);
+    setSubmitting(false);
+    if (!result.ok) {
+      if (result.error === 'wrong_password') setErr('Wrong password.');
+      else if (result.error === 'too_many_attempts') setErr(result.message ?? 'Too many attempts. Wait a minute and try again.');
+      else setErr(result.message ?? 'Something went wrong. Try again.');
+      setPw('');
+    }
+  };
+
+  return (
+    <div className="flex h-screen w-screen items-center justify-center bg-ink-50 p-6">
+      <form
+        onSubmit={submit}
+        className="w-full max-w-sm rounded-2xl border border-ink-200 bg-white p-8 shadow-xl shadow-ink-900/10"
+      >
+        <div className="mb-1 flex items-center gap-2 text-ink-500">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+            <rect x="3" y="7" width="10" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.4" />
+            <path d="M5 7V5a3 3 0 1 1 6 0v2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+          </svg>
+          <span className="text-[11px] font-semibold uppercase tracking-[0.08em]">Password required</span>
+        </div>
+        <h1 className="text-[18px] font-semibold text-ink-900">
+          {name || slug}
+        </h1>
+        <p className="mt-1 text-[12.5px] text-ink-500">
+          This plan is password-protected. Enter the password to view and edit.
+        </p>
+
+        <label className="mt-5 block">
+          <span className="sr-only">Password</span>
+          <input
+            type="password"
+            autoFocus
+            value={pw}
+            onChange={e => setPw(e.target.value)}
+            placeholder="Password"
+            className="block w-full rounded-lg border border-ink-300 bg-white px-3 py-2 text-[13px] text-ink-900 outline-none transition focus:border-brand-400 focus:ring-2 focus:ring-brand-200"
+          />
+        </label>
+        {err && (
+          <div className="mt-2 rounded-md bg-rose-50 px-2.5 py-1.5 text-[12px] text-rose-700">{err}</div>
+        )}
+
+        <button
+          type="submit"
+          disabled={submitting || !pw}
+          className="mt-4 inline-flex h-9 w-full items-center justify-center rounded-lg bg-brand-600 px-4 text-[13px] font-semibold text-[#fff] shadow-sm transition hover:bg-brand-700 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {submitting ? 'Unlocking…' : 'Unlock'}
+        </button>
+        <button
+          type="button"
+          onClick={() => navigate('/')}
+          className="mt-2 inline-flex h-8 w-full items-center justify-center rounded-lg text-[12px] font-medium text-ink-500 transition hover:bg-ink-100 hover:text-ink-700"
+        >
+          ← Back to plans
+        </button>
+      </form>
+    </div>
+  );
 }
 
 function PlanView({
@@ -275,12 +381,18 @@ function PlanView({
   setState,
   conn,
   peers,
+  hasPassword,
+  changePassword,
 }: {
   slug: string;
   state: State;
   setState: (updater: (s: State) => State) => void;
   conn: ConnState;
   peers: number;
+  hasPassword: boolean;
+  changePassword: (args: { currentPassword?: string; newPassword: string | null }) => Promise<
+    { ok: true } | { ok: false; error: PasswordError; message?: string }
+  >;
 }) {
   // Set page title to plan name
   useEffect(() => {
@@ -688,6 +800,7 @@ function PlanView({
   const [editingProjectId, setEditingProjectId] = useState<ID | null>(null);
   const [isAddingProject, setIsAddingProject] = useState(false);
   const [highlightedProjectId, setHighlightedProjectId] = useState<ID | null>(null);
+  const [passwordDialog, setPasswordDialog] = useState<'set' | 'change' | 'remove' | null>(null);
   useEffect(() => {
     try { localStorage.setItem(TRANSPOSED_KEY, transposed ? '1' : '0'); } catch {}
     // re-trigger auto-scroll on layout swap
@@ -784,6 +897,20 @@ function PlanView({
           onFocus={onTextFocus}
           onBlur={onTextBlur}
         />
+        {hasPassword && (
+          <button
+            type="button"
+            onClick={() => setPasswordDialog('change')}
+            title="Password-protected — click to change or remove"
+            className="inline-flex h-6 items-center gap-1 rounded-md bg-amber-100 px-2 text-[11px] font-medium text-amber-800 transition hover:bg-amber-200"
+          >
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden>
+              <rect x="3" y="7" width="10" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.5" />
+              <path d="M5 7V5a3 3 0 1 1 6 0v2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+            Locked
+          </button>
+        )}
         <Presence conn={conn} peers={peers} />
         <ToolbarButton onClick={addIteration} title="Add a new iteration after the last one">+ Iteration</ToolbarButton>
         <ToolbarButton onClick={() => addPerson()} title="Add a new person">+ Person</ToolbarButton>
@@ -795,6 +922,13 @@ function PlanView({
             { label: '← Add past iteration', onClick: addPastIteration, title: 'Add an iteration before the first one' },
             { label: transposed ? '⇆ People as rows' : '⇆ Weeks as rows', onClick: () => setTransposed(t => !t), title: transposed ? 'Switch back to people-as-rows view' : 'Swap rows and columns (weeks as rows)' },
             { label: darkMode ? '☀ Light mode' : '☾ Dark mode', onClick: () => setDarkMode(d => !d), title: darkMode ? 'Switch to light mode' : 'Switch to dark mode' },
+            { divider: true },
+            hasPassword
+              ? { label: '🔒 Change password', onClick: () => setPasswordDialog('change'), title: 'Change the password required to view this plan' }
+              : { label: '🔒 Set password', onClick: () => setPasswordDialog('set'), title: 'Require a password to view this plan' },
+            ...(hasPassword
+              ? [{ label: '🔓 Remove password', onClick: () => setPasswordDialog('remove'), title: 'Remove the password from this plan' } as OverflowItem]
+              : []),
             { divider: true },
             { label: 'Clear chart', onClick: clearAssignments, danger: true, title: 'Remove all assignments' },
           ]}
@@ -950,6 +1084,14 @@ function PlanView({
         onRemove={() => removeProject(editingProject.id)}
         onClose={() => { setEditingProjectId(null); setIsAddingProject(false); }}
         isNew={isAddingProject}
+      />
+    )}
+    {passwordDialog && (
+      <PasswordDialog
+        mode={passwordDialog}
+        hasPassword={hasPassword}
+        onClose={() => setPasswordDialog(null)}
+        changePassword={changePassword}
       />
     )}
     </>
@@ -1110,6 +1252,160 @@ function OverflowMenu(props: { items: OverflowItem[] }) {
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+function PasswordDialog(props: {
+  mode: 'set' | 'change' | 'remove';
+  hasPassword: boolean;
+  onClose: () => void;
+  changePassword: (args: { currentPassword?: string; newPassword: string | null }) => Promise<
+    { ok: true } | { ok: false; error: PasswordError; message?: string }
+  >;
+}) {
+  const { mode, hasPassword, onClose, changePassword } = props;
+  const [currentPw, setCurrentPw] = useState('');
+  const [newPw, setNewPw] = useState('');
+  const [confirmPw, setConfirmPw] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  const title = mode === 'set' ? 'Set a password' : mode === 'change' ? 'Change password' : 'Remove password';
+  const accent = mode === 'remove' ? 'rose' : 'brand';
+
+  // Esc to close.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !submitting) onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose, submitting]);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (submitting) return;
+    setErr(null);
+
+    if (mode !== 'set' && hasPassword && !currentPw) {
+      setErr('Enter the current password.');
+      return;
+    }
+    if (mode !== 'remove') {
+      if (newPw.length < 4) {
+        setErr('Password must be at least 4 characters.');
+        return;
+      }
+      if (newPw !== confirmPw) {
+        setErr('Passwords do not match.');
+        return;
+      }
+    }
+
+    setSubmitting(true);
+    const result = await changePassword({
+      currentPassword: hasPassword ? currentPw : undefined,
+      newPassword: mode === 'remove' ? null : newPw,
+    });
+    setSubmitting(false);
+    if (!result.ok) {
+      if (result.error === 'auth_required') setErr('Current password is incorrect.');
+      else if (result.error === 'password_too_short') setErr(result.message ?? 'Password must be at least 4 characters.');
+      else setErr(result.message ?? 'Something went wrong. Try again.');
+      return;
+    }
+    onClose();
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-ink-900/40 p-6 backdrop-blur-sm"
+      onMouseDown={(e) => { if (e.target === e.currentTarget && !submitting) onClose(); }}
+    >
+      <form
+        onSubmit={submit}
+        className="w-full max-w-sm rounded-2xl border border-ink-200 bg-white p-6 shadow-2xl shadow-ink-900/30"
+      >
+        <h2 className="text-[16px] font-semibold text-ink-900">{title}</h2>
+        {mode === 'set' && (
+          <p className="mt-1 text-[12.5px] text-ink-500">
+            Anyone visiting this plan will need the password before they can view or edit it.
+            <span className="mt-2 block rounded-md bg-amber-50 px-2.5 py-1.5 text-[11.5px] text-amber-800">
+              ⚠ There is no recovery if forgotten — choose something memorable or save it somewhere safe.
+            </span>
+          </p>
+        )}
+        {mode === 'remove' && (
+          <p className="mt-1 text-[12.5px] text-ink-500">
+            Anyone with the plan URL will be able to view and edit it again.
+          </p>
+        )}
+
+        {hasPassword && (
+          <label className="mt-4 block">
+            <span className="mb-1 block text-[11.5px] font-semibold uppercase tracking-[0.06em] text-ink-500">Current password</span>
+            <input
+              type="password"
+              autoFocus
+              value={currentPw}
+              onChange={e => setCurrentPw(e.target.value)}
+              className="block w-full rounded-lg border border-ink-300 bg-white px-3 py-2 text-[13px] text-ink-900 outline-none transition focus:border-brand-400 focus:ring-2 focus:ring-brand-200"
+            />
+          </label>
+        )}
+
+        {mode !== 'remove' && (
+          <>
+            <label className="mt-3 block">
+              <span className="mb-1 block text-[11.5px] font-semibold uppercase tracking-[0.06em] text-ink-500">New password</span>
+              <input
+                type="password"
+                autoFocus={!hasPassword}
+                value={newPw}
+                onChange={e => setNewPw(e.target.value)}
+                className="block w-full rounded-lg border border-ink-300 bg-white px-3 py-2 text-[13px] text-ink-900 outline-none transition focus:border-brand-400 focus:ring-2 focus:ring-brand-200"
+              />
+            </label>
+            <label className="mt-3 block">
+              <span className="mb-1 block text-[11.5px] font-semibold uppercase tracking-[0.06em] text-ink-500">Confirm new password</span>
+              <input
+                type="password"
+                value={confirmPw}
+                onChange={e => setConfirmPw(e.target.value)}
+                className="block w-full rounded-lg border border-ink-300 bg-white px-3 py-2 text-[13px] text-ink-900 outline-none transition focus:border-brand-400 focus:ring-2 focus:ring-brand-200"
+              />
+            </label>
+          </>
+        )}
+
+        {err && (
+          <div className="mt-3 rounded-md bg-rose-50 px-2.5 py-1.5 text-[12px] text-rose-700">{err}</div>
+        )}
+
+        <div className="mt-5 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={submitting}
+            className="inline-flex h-9 items-center rounded-lg px-3 text-[12.5px] font-medium text-ink-600 transition hover:bg-ink-100 hover:text-ink-900 disabled:opacity-60"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={submitting}
+            className={
+              'inline-flex h-9 items-center rounded-lg px-4 text-[12.5px] font-semibold text-[#fff] shadow-sm transition active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60 ' +
+              (accent === 'rose'
+                ? 'bg-rose-600 hover:bg-rose-700'
+                : 'bg-brand-600 hover:bg-brand-700')
+            }
+          >
+            {submitting
+              ? (mode === 'remove' ? 'Removing…' : 'Saving…')
+              : (mode === 'set' ? 'Set password' : mode === 'change' ? 'Change password' : 'Remove password')}
+          </button>
+        </div>
+      </form>
     </div>
   );
 }

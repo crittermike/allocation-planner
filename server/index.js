@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 import { fileURLToPath } from 'url';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = process.env.DATA_DIR || path.resolve(__dirname, '..', 'data');
@@ -22,6 +23,28 @@ db.exec(`
     updated_at INTEGER NOT NULL
   );
 `);
+
+// --- Migrations: password protection columns (idempotent). ---
+const planCols = new Set(db.prepare("PRAGMA table_info(plans)").all().map((c) => c.name));
+if (!planCols.has('password_hash')) {
+  db.exec('ALTER TABLE plans ADD COLUMN password_hash TEXT');
+}
+if (!planCols.has('password_version')) {
+  db.exec('ALTER TABLE plans ADD COLUMN password_version INTEGER NOT NULL DEFAULT 0');
+}
+
+// --- Server secret for signing unlock tokens. ---
+// Persisted in DATA_DIR so restarts don't invalidate all tokens.
+const SECRET_FILE = path.join(DATA_DIR, '.token-secret');
+let SERVER_SECRET;
+if (process.env.PLAN_TOKEN_SECRET) {
+  SERVER_SECRET = Buffer.from(process.env.PLAN_TOKEN_SECRET, 'utf8');
+} else if (fs.existsSync(SECRET_FILE)) {
+  SERVER_SECRET = fs.readFileSync(SECRET_FILE);
+} else {
+  SERVER_SECRET = crypto.randomBytes(32);
+  fs.writeFileSync(SECRET_FILE, SERVER_SECRET, { mode: 0o600 });
+}
 
 const slugify = (s) =>
   s
@@ -42,7 +65,10 @@ const uniqueSlug = (base) => {
   throw new Error('Could not allocate slug');
 };
 
-const getPlan = (slug) => db.prepare('SELECT slug, name, state, updated_at FROM plans WHERE slug = ?').get(slug);
+const getPlan = (slug) =>
+  db.prepare(
+    'SELECT slug, name, state, updated_at, password_hash, password_version FROM plans WHERE slug = ?',
+  ).get(slug);
 const listPlans = () =>
   db.prepare('SELECT slug, name, updated_at FROM plans ORDER BY updated_at DESC LIMIT 100').all();
 const insertPlan = db.prepare(
@@ -51,7 +77,94 @@ const insertPlan = db.prepare(
 const updatePlan = db.prepare(
   'UPDATE plans SET state = ?, name = ?, updated_at = ? WHERE slug = ?',
 );
+const updatePlanPassword = db.prepare(
+  'UPDATE plans SET password_hash = ?, password_version = password_version + 1, updated_at = ? WHERE slug = ?',
+);
 const deletePlan = db.prepare('DELETE FROM plans WHERE slug = ?');
+
+// --- Password hashing (scrypt; encoded as scrypt$<saltHex>$<hashHex>). ---
+const SCRYPT_KEYLEN = 32;
+const hashPassword = (plaintext) => {
+  const salt = crypto.randomBytes(16);
+  const hash = crypto.scryptSync(plaintext, salt, SCRYPT_KEYLEN);
+  return `scrypt$${salt.toString('hex')}$${hash.toString('hex')}`;
+};
+const verifyPassword = (plaintext, stored) => {
+  if (!stored) return false;
+  const parts = stored.split('$');
+  if (parts.length !== 3 || parts[0] !== 'scrypt') return false;
+  let salt, expected;
+  try {
+    salt = Buffer.from(parts[1], 'hex');
+    expected = Buffer.from(parts[2], 'hex');
+  } catch {
+    return false;
+  }
+  let actual;
+  try {
+    actual = crypto.scryptSync(plaintext, salt, expected.length);
+  } catch {
+    return false;
+  }
+  if (actual.length !== expected.length) return false;
+  return crypto.timingSafeEqual(actual, expected);
+};
+
+// --- Unlock tokens (HMAC over slug:passwordVersion, no DB lookup needed). ---
+const issueToken = (slug, passwordVersion) => {
+  const mac = crypto
+    .createHmac('sha256', SERVER_SECRET)
+    .update(`${slug}:${passwordVersion}`)
+    .digest();
+  return mac.toString('base64url');
+};
+const verifyToken = (slug, passwordVersion, token) => {
+  if (!token || typeof token !== 'string') return false;
+  let provided;
+  try {
+    provided = Buffer.from(token, 'base64url');
+  } catch {
+    return false;
+  }
+  const expected = crypto
+    .createHmac('sha256', SERVER_SECRET)
+    .update(`${slug}:${passwordVersion}`)
+    .digest();
+  if (provided.length !== expected.length) return false;
+  return crypto.timingSafeEqual(provided, expected);
+};
+
+const tokenFromReq = (req) => {
+  const auth = req.headers && req.headers.authorization;
+  if (auth && typeof auth === 'string' && auth.startsWith('Bearer ')) {
+    return auth.slice(7).trim();
+  }
+  return null;
+};
+const tokenFromUrl = (rawUrl) => {
+  // Pulled out of req.url since the WS upgrade handler doesn't parse query strings.
+  const qi = rawUrl.indexOf('?');
+  if (qi === -1) return null;
+  const params = new URLSearchParams(rawUrl.slice(qi + 1));
+  return params.get('token');
+};
+
+// --- Crude per-slug+IP rate limit for /unlock to slow brute force. ---
+const attempts = new Map(); // key -> { count, resetAt }
+const ATTEMPT_WINDOW_MS = 60_000;
+const ATTEMPT_MAX = 8;
+const checkRateLimit = (key) => {
+  const now = Date.now();
+  const cur = attempts.get(key);
+  if (!cur || cur.resetAt < now) {
+    attempts.set(key, { count: 1, resetAt: now + ATTEMPT_WINDOW_MS });
+    return true;
+  }
+  if (cur.count >= ATTEMPT_MAX) return false;
+  cur.count++;
+  return true;
+};
+const clearRateLimit = (key) => attempts.delete(key);
 
 const MS_PER_DAY = 86400000;
 const mondayOf = (d) => {
@@ -104,10 +217,92 @@ app.post('/api/plans', (req, res) => {
 app.get('/api/plans/:slug', (req, res) => {
   const row = getPlan(req.params.slug);
   if (!row) return res.status(404).json({ error: 'not found' });
-  res.json({ slug: row.slug, name: row.name, state: JSON.parse(row.state), updated_at: row.updated_at });
+  const hasPassword = !!row.password_hash;
+  if (hasPassword) {
+    const token = tokenFromReq(req);
+    if (!verifyToken(row.slug, row.password_version, token)) {
+      return res.status(401).json({ error: 'auth_required', requiresPassword: true, name: row.name, slug: row.slug });
+    }
+  }
+  res.json({
+    slug: row.slug,
+    name: row.name,
+    state: JSON.parse(row.state),
+    updated_at: row.updated_at,
+    hasPassword,
+  });
+});
+
+app.post('/api/plans/:slug/unlock', (req, res) => {
+  const row = getPlan(req.params.slug);
+  if (!row) return res.status(404).json({ error: 'not found' });
+  if (!row.password_hash) return res.json({ token: issueToken(row.slug, row.password_version), hasPassword: false });
+
+  const ip = req.ip || req.socket.remoteAddress || 'unknown';
+  const rlKey = `unlock:${row.slug}:${ip}`;
+  if (!checkRateLimit(rlKey)) {
+    return res.status(429).json({ error: 'too_many_attempts', message: 'Too many attempts. Wait a minute and try again.' });
+  }
+
+  const password = String(req.body?.password ?? '');
+  if (!password || !verifyPassword(password, row.password_hash)) {
+    return res.status(401).json({ error: 'wrong_password' });
+  }
+  clearRateLimit(rlKey);
+  res.json({ token: issueToken(row.slug, row.password_version), hasPassword: true });
+});
+
+app.post('/api/plans/:slug/password', (req, res) => {
+  const row = getPlan(req.params.slug);
+  if (!row) return res.status(404).json({ error: 'not found' });
+  const currentlyHasPw = !!row.password_hash;
+
+  // Changing or removing requires either the old password OR a currently-valid token.
+  if (currentlyHasPw) {
+    const token = tokenFromReq(req);
+    const currentPassword = req.body?.currentPassword;
+    const hasValidToken = verifyToken(row.slug, row.password_version, token);
+    const hasValidPassword =
+      typeof currentPassword === 'string' &&
+      currentPassword.length > 0 &&
+      verifyPassword(currentPassword, row.password_hash);
+    if (!hasValidToken && !hasValidPassword) {
+      return res.status(401).json({ error: 'auth_required' });
+    }
+  }
+
+  const raw = req.body?.newPassword;
+  const removing = raw === null;
+  const newPassword = typeof raw === 'string' ? raw : '';
+  if (!removing) {
+    if (newPassword.length < 4) {
+      return res.status(400).json({ error: 'password_too_short', message: 'Password must be at least 4 characters.' });
+    }
+    if (newPassword.length > 256) {
+      return res.status(400).json({ error: 'password_too_long' });
+    }
+  }
+
+  const nextHash = removing ? null : hashPassword(newPassword);
+  updatePlanPassword.run(nextHash, Date.now(), row.slug);
+
+  const after = getPlan(row.slug);
+  if (!after) return res.status(500).json({ error: 'lost_row' });
+  if (removing) {
+    return res.json({ token: null, hasPassword: false });
+  }
+  res.json({ token: issueToken(after.slug, after.password_version), hasPassword: true });
 });
 
 app.delete('/api/plans/:slug', (req, res) => {
+  const row = getPlan(req.params.slug);
+  if (!row) return res.json({ ok: true });
+  if (row.password_hash) {
+    const token = tokenFromReq(req);
+    if (!verifyToken(row.slug, row.password_version, token)) {
+      return res.status(401).json({ error: 'auth_required' });
+    }
+  }
   deletePlan.run(req.params.slug);
   res.json({ ok: true });
 });
@@ -164,6 +359,17 @@ server.on('upgrade', (req, socket, head) => {
     socket.destroy();
     return;
   }
+  if (row.password_hash) {
+    const token = tokenFromUrl(req.url);
+    if (!verifyToken(row.slug, row.password_version, token)) {
+      // Custom 4401 close so the client can distinguish auth failure from network errors.
+      socket.write(
+        'HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n',
+      );
+      socket.destroy();
+      return;
+    }
+  }
   wss.handleUpgrade(req, socket, head, (ws) => {
     ws._slug = slug;
     join(slug, ws);
@@ -195,3 +401,4 @@ const PORT = Number(process.env.PORT || 8787);
 server.listen(PORT, () => {
   console.log(`[gantt] server listening on http://localhost:${PORT}`);
 });
+
