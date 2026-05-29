@@ -185,7 +185,6 @@ function BarRow({
                 color: inkFor(seg.color),
                 opacity: isDimmed ? 0.35 : seg.overCapacity ? 0.55 : 1,
                 justifyContent: seg.pct > 10 ? 'flex-start' : 'center',
-                cursor: onHoverProject ? 'pointer' : undefined,
               }}
             >
               {seg.pct > 6 && (
