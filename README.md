@@ -65,10 +65,18 @@ type State = {
   title: string;
   people: { id; name }[];
   projects: { id; name; color; driId; url?; estimateEM?; priority?; bigRock?; descoped?; notes? }[];
-  iterations: { id; startDate /* YYYY-MM-DD Monday */ }[];
+  iterations: { id; startDate /* YYYY-MM-DD Monday */; goal? }[];
   assignments: { id; personId; weekId /* `${iterId}:0|1` */; projectId }[];
+  quarter?: { engineers; weeksInQuarter; firstResponderWeeks; weeksPerEM; buffers: { id; label; pct; note? }[]; engineersNote? };
 };
 ```
+
+Reserved `projectId` sentinels (an assignment with one of these IDs is non-project
+work and is excluded from per-project planned-EM totals):
+
+- `__pto__` — vacation / time off
+- `__fr__` — first-responder duty (capacity already deducts `quarter.firstResponderWeeks`)
+- `__unavailable__` — person not on team that week
 
 The server stores the full state per plan as JSON in a single SQLite row.
 

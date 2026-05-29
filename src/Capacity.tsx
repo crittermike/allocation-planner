@@ -89,6 +89,8 @@ function BarRow({
   total,
   capacity,
   hideDelta,
+  highlightedProjectId,
+  onHoverProject,
 }: {
   label: string;
   segments: BarSegment[];
@@ -99,42 +101,57 @@ function BarRow({
   total: number;
   capacity: number;
   hideDelta?: boolean;
+  highlightedProjectId?: ID | null;
+  onHoverProject?: (id: ID | null) => void;
 }) {
   const delta = capacity - total;
   const over = hasConfiguredQuarter && delta < -0.0001;
   const under = hasConfiguredQuarter && delta > 0.0001;
   const deltaAbs = Math.abs(delta);
+  const hasHover = highlightedProjectId != null;
 
   return (
     <div className="flex items-center gap-3">
       <div className="w-[68px] shrink-0 text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-500">
         {label}
       </div>
-      <div className="relative h-9 flex-1 overflow-visible rounded-lg bg-ink-100">
-        {segments.map(seg => (
-          <div
-            key={seg.id}
-            className="absolute top-0 flex h-full items-center overflow-hidden px-1.5 text-[10px] font-semibold tabular-nums"
-            style={{
-              left: `${seg.startPct}%`,
-              width: `${seg.pct}%`,
-              backgroundColor: seg.color,
-              color: inkFor(seg.color),
-              opacity: seg.overCapacity ? 0.55 : 1,
-              justifyContent: seg.pct > 10 ? 'flex-start' : 'center',
-            }}
-            title={`${seg.name} — ${fmtNum(seg.em, 1)} EM${seg.overCapacity ? ' (over capacity)' : ''}`}
-          >
-            {seg.pct > 6 && (
-              <span className="flex w-full min-w-0 items-baseline gap-1.5">
-                {seg.pct > 10 && (
-                  <span className="min-w-0 flex-1 truncate font-medium opacity-90">{seg.name || 'Untitled'}</span>
-                )}
-                <span className="shrink-0">{fmtNum(seg.em, 1)}</span>
-              </span>
-            )}
-          </div>
-        ))}
+      <div
+        className="relative h-9 flex-1 overflow-visible rounded-lg bg-ink-100"
+        onMouseLeave={onHoverProject ? () => onHoverProject(null) : undefined}
+      >
+        {segments.map(seg => {
+          const isHovered = highlightedProjectId === seg.id;
+          const isDimmed = hasHover && !isHovered;
+          return (
+            <div
+              key={seg.id}
+              onMouseEnter={onHoverProject ? () => onHoverProject(seg.id) : undefined}
+              className={
+                'absolute top-0 flex h-full items-center overflow-hidden px-1.5 text-[10px] font-semibold tabular-nums transition-[transform,box-shadow,opacity] duration-100 ' +
+                (isHovered ? 'z-10 -translate-y-px shadow-md ring-2 ring-ink-900 ring-offset-1 ring-offset-white' : '')
+              }
+              style={{
+                left: `${seg.startPct}%`,
+                width: `${seg.pct}%`,
+                backgroundColor: seg.color,
+                color: inkFor(seg.color),
+                opacity: isDimmed ? 0.35 : seg.overCapacity ? 0.55 : 1,
+                justifyContent: seg.pct > 10 ? 'flex-start' : 'center',
+                cursor: onHoverProject ? 'pointer' : undefined,
+              }}
+              title={`${seg.name} — ${fmtNum(seg.em, 1)} EM${seg.overCapacity ? ' (over capacity)' : ''}`}
+            >
+              {seg.pct > 6 && (
+                <span className="flex w-full min-w-0 items-baseline gap-1.5">
+                  {seg.pct > 10 && (
+                    <span className="min-w-0 flex-1 truncate font-medium opacity-90">{seg.name || 'Untitled'}</span>
+                  )}
+                  <span className="shrink-0">{fmtNum(seg.em, 1)}</span>
+                </span>
+              )}
+            </div>
+          );
+        })}
         {hasConfiguredQuarter && capacityEM > 0 && capacityPct < 100 && (
           <div
             className="pointer-events-none absolute -top-1 bottom-[-4px] w-[2px] bg-ink-900"
@@ -177,11 +194,15 @@ export function CapacityBars({
   initiatives,
   plannedByProject,
   onConfigureQuarter,
+  highlightedProjectId,
+  onHoverProject,
 }: {
   info: CapacityInfo;
   initiatives: Project[];
   plannedByProject: Record<ID, number>;
   onConfigureQuarter?: () => void;
+  highlightedProjectId?: ID | null;
+  onHoverProject?: (id: ID | null) => void;
 }) {
   void onConfigureQuarter; // quarter setup lives in the toolbar overflow menu
   const { capacityEM, demandEM, hasConfiguredQuarter } = info;
@@ -227,6 +248,8 @@ export function CapacityBars({
         emptyMessage={hasConfiguredQuarter ? 'No estimates yet. Add projects below.' : 'Set up the quarter to see capacity, then add projects.'}
         total={demandEM}
         capacity={capacityEM}
+        highlightedProjectId={highlightedProjectId}
+        onHoverProject={onHoverProject}
       />
       <BarRow
         label="Actual"
@@ -237,6 +260,8 @@ export function CapacityBars({
         emptyMessage="Nothing planned yet. Drag projects onto the chart below."
         total={totalPlanned}
         capacity={capacityEM}
+        highlightedProjectId={highlightedProjectId}
+        onHoverProject={onHoverProject}
       />
     </div>
   );
@@ -329,7 +354,23 @@ export function QuarterModal({
               onChange={n => updateQuarter({ firstResponderWeeks: n })}
               step={1}
               min={0}
-              hint="Total person-weeks reserved for on-call rotation"
+              hint={
+                info.frWeeksInPlan > 0
+                  ? `${info.frWeeksInPlan} marked in plan${
+                      info.frWeeksInPlan !== quarter.firstResponderWeeks ? ' — click to sync' : ''
+                    }`
+                  : 'Total person-weeks reserved for on-call rotation'
+              }
+              hintTone={
+                info.frWeeksInPlan > 0 && info.frWeeksInPlan !== quarter.firstResponderWeeks
+                  ? 'warn'
+                  : undefined
+              }
+              onHintClick={
+                info.frWeeksInPlan > 0 && info.frWeeksInPlan !== quarter.firstResponderWeeks
+                  ? () => updateQuarter({ firstResponderWeeks: info.frWeeksInPlan })
+                  : undefined
+              }
             />
           </div>
 
@@ -500,6 +541,8 @@ export function PrioritizationTable({
   weeksPerEM,
   plannedByProject,
   onEdit,
+  highlightedProjectId,
+  onHoverProject,
 }: {
   initiatives: Project[];
   capacityEM: number;
@@ -514,6 +557,8 @@ export function PrioritizationTable({
   weeksPerEM: number;
   plannedByProject: Record<ID, number>;
   onEdit: (id: ID) => void;
+  highlightedProjectId?: ID | null;
+  onHoverProject?: (id: ID | null) => void;
 }) {
   void capacityEM; void demandEM; // referenced in fitMarkerIndex compute upstream
   if (initiatives.length === 0) {
@@ -532,7 +577,10 @@ export function PrioritizationTable({
     );
   }
   return (
-    <table className="w-full">
+    <table
+      className="w-full"
+      onMouseLeave={onHoverProject ? () => onHoverProject(null) : undefined}
+    >
       <thead>
         <tr className="border-b border-ink-200 bg-ink-50/60 text-[10.5px] font-semibold uppercase tracking-[0.06em] text-ink-500">
           <th className="w-[44px] px-2 py-2 text-center">#</th>
@@ -554,6 +602,9 @@ export function PrioritizationTable({
             isFitLine={showWhatFits && idx === fitMarkerIndex}
             weeksPerEM={weeksPerEM}
             plannedWeeks={plannedByProject[p.id] ?? 0}
+            isHighlighted={highlightedProjectId === p.id}
+            isDimmed={highlightedProjectId != null && highlightedProjectId !== p.id}
+            onHover={onHoverProject ? () => onHoverProject(p.id) : undefined}
             onUpdate={patch => updateProject(p.id, patch)}
             onEdit={() => onEdit(p.id)}
             onDescope={() => descopeInitiative(p.id)}
@@ -580,6 +631,9 @@ function InitiativeRow({
   isFitLine,
   weeksPerEM,
   plannedWeeks,
+  isHighlighted,
+  isDimmed,
+  onHover,
   onUpdate,
   onEdit,
   onDescope,
@@ -595,6 +649,9 @@ function InitiativeRow({
   isFitLine: boolean;
   weeksPerEM: number;
   plannedWeeks: number;
+  isHighlighted?: boolean;
+  isDimmed?: boolean;
+  onHover?: () => void;
   onUpdate: (patch: Partial<Project>) => void;
   onEdit: () => void;
   onDescope: () => void;
@@ -602,7 +659,10 @@ function InitiativeRow({
   onMoveUp: () => void;
   onMoveDown: () => void;
 }) {
-  const fadedClass = showWhatFits && pastFitLine ? 'opacity-50' : '';
+  const fadedClass = (showWhatFits && pastFitLine ? 'opacity-50' : '') + (isDimmed ? ' opacity-60' : '');
+  const highlightClass = isHighlighted
+    ? 'bg-amber-50/70 ring-1 ring-inset ring-amber-300/70'
+    : 'hover:bg-ink-50/40';
 
   const est = project.estimateEM;
   const plannedEM = weeksPerEM > 0 ? plannedWeeks / weeksPerEM : 0;
@@ -630,7 +690,10 @@ function InitiativeRow({
           </td>
         </tr>
       )}
-      <tr className={'border-b border-ink-100 align-middle transition hover:bg-ink-50/40 ' + fadedClass}>
+      <tr
+        onMouseEnter={onHover}
+        className={'border-b border-ink-100 align-middle transition ' + highlightClass + ' ' + fadedClass}
+      >
         <td className="px-2 py-2 text-center align-middle">
           <div className="inline-flex flex-col items-center gap-0">
             <button
@@ -833,6 +896,8 @@ function NumberField({
   min,
   max,
   hint,
+  hintTone,
+  onHintClick,
 }: {
   label: string;
   value: number;
@@ -841,7 +906,10 @@ function NumberField({
   min?: number;
   max?: number;
   hint?: string;
+  hintTone?: 'warn';
+  onHintClick?: () => void;
 }) {
+  const hintColor = hintTone === 'warn' ? 'text-amber-700' : 'text-ink-400';
   return (
     <label className="block">
       <span className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.06em] text-ink-500">
@@ -859,7 +927,19 @@ function NumberField({
         }}
         className="block w-full rounded-lg border border-ink-200 bg-white px-3 py-2 text-[14px] tabular-nums text-ink-900 outline-none transition focus:border-brand-400 focus:ring-2 focus:ring-brand-200"
       />
-      {hint && <span className="mt-1 block text-[11px] text-ink-400">{hint}</span>}
+      {hint && (
+        onHintClick ? (
+          <button
+            type="button"
+            onClick={onHintClick}
+            className={`mt-1 inline-flex cursor-pointer rounded text-left text-[11px] underline-offset-2 transition hover:underline ${hintColor}`}
+          >
+            {hint}
+          </button>
+        ) : (
+          <span className={`mt-1 block text-[11px] ${hintColor}`}>{hint}</span>
+        )
+      )}
     </label>
   );
 }

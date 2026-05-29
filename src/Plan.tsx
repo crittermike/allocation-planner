@@ -111,6 +111,21 @@ const PTO_PROJECT: Project = {
 };
 const isPto = (id: ID) => id === PTO_ID;
 
+/* ---------- First Responder sentinel ----------
+ * Like PTO: a person-week reserved for on-call/first-responder duty rather
+ * than project work. Capacity already deducts `quarter.firstResponderWeeks`,
+ * so FR assignments are excluded from `plannedByProject` to avoid
+ * double-counting (see capacityShared.tsx).
+ */
+const FR_ID: ID = '__fr__';
+const FR_PROJECT: Project = {
+  id: FR_ID,
+  name: 'First Responder',
+  color: '#fef3c7',
+  driId: null,
+};
+const isFR = (id: ID) => id === FR_ID;
+
 /* ---------- Unavailable sentinel ----------
  * Like PTO but means the person isn't on the team yet (or has left).
  * Visually distinct: solid grey, "N/A" label.
@@ -123,12 +138,19 @@ const UNAVAILABLE_PROJECT: Project = {
   driId: null,
 };
 const isUnavailable = (id: ID) => id === UNAVAILABLE_ID;
-const isSentinel = (id: ID) => isPto(id) || isUnavailable(id);
+const isSentinel = (id: ID) => isPto(id) || isFR(id) || isUnavailable(id);
 
 const lookupProject = (
   projectsById: Record<ID, Project>,
   id: ID,
-): Project | undefined => isPto(id) ? PTO_PROJECT : isUnavailable(id) ? UNAVAILABLE_PROJECT : projectsById[id];
+): Project | undefined =>
+  isPto(id)
+    ? PTO_PROJECT
+    : isFR(id)
+    ? FR_PROJECT
+    : isUnavailable(id)
+    ? UNAVAILABLE_PROJECT
+    : projectsById[id];
 
 /* ---------- date helpers ---------- */
 const MS_PER_DAY = 86400000;
@@ -1232,6 +1254,8 @@ function PlanView({
                 initiatives={activeInitiatives}
                 plannedByProject={plannedByProject}
                 onConfigureQuarter={() => setQuarterModalOpen(true)}
+                highlightedProjectId={highlightedProjectId}
+                onHoverProject={setHighlightedProjectId}
               />
             </div>
           )}
@@ -1256,6 +1280,8 @@ function PlanView({
                 weeksPerEM={cap.quarter.weeksPerEM}
                 plannedByProject={plannedByProject}
                 onEdit={id => { setIsAddingProject(false); setEditingProjectId(id); }}
+                highlightedProjectId={highlightedProjectId}
+                onHoverProject={setHighlightedProjectId}
               />
               {descopedInitiatives.length > 0 && (
                 <DescopedDrawer
@@ -2265,6 +2291,7 @@ function CollapsedIterationCell(props: {
           const project = lookupProject(props.projectsById, s.projectId);
           if (!project) return null;
           const pto = isPto(s.projectId);
+          const fr = isFR(s.projectId);
           const unavail = isUnavailable(s.projectId);
           const widthPx = Math.max(10, s.weeks * 14);
           return (
@@ -2274,6 +2301,8 @@ function CollapsedIterationCell(props: {
                 'inline-block h-2.5 rounded-full ' +
                 (pto
                   ? 'border border-dashed border-ink-400/70'
+                  : fr
+                  ? 'border border-amber-400/70'
                   : unavail
                   ? 'border border-ink-400/70'
                   : 'border border-black/10 shadow-[inset_0_1px_0_rgba(255,255,255,0.45)]')
@@ -2282,6 +2311,8 @@ function CollapsedIterationCell(props: {
                 width: `${widthPx}px`,
                 background: pto
                   ? 'repeating-linear-gradient(135deg,var(--pattern-fill-1) 0 4px,var(--color-ink-300) 4px 8px)'
+                  : fr
+                  ? '#fef3c7'
                   : unavail
                   ? 'var(--color-ink-400)'
                   : project.color,
@@ -3180,8 +3211,10 @@ function Cell(props: {
             style={{
               background: isPto(props.extendPreviewProject.id)
                 ? 'transparent'
+                : isFR(props.extendPreviewProject.id)
+                ? '#fef3c7'
                 : props.extendPreviewProject.color,
-              color: isPto(props.extendPreviewProject.id)
+              color: isPto(props.extendPreviewProject.id) || isFR(props.extendPreviewProject.id)
                 ? 'var(--color-ink-600)'
                 : inkFor(props.extendPreviewProject.color),
             }}
@@ -3197,6 +3230,7 @@ function Cell(props: {
               key={a.id}
               project={proj}
               isPto={isPto(a.projectId)}
+              isFR={isFR(a.projectId)}
               isUnavailable={isUnavailable(a.projectId)}
               isOwnDri={proj.driId === props.personId}
               muted={props.isPastWeek || (props.highlightedProjectId != null && props.highlightedProjectId !== a.projectId)}
@@ -3223,6 +3257,7 @@ function Cell(props: {
 function AssignChip(props: {
   project: Project;
   isPto?: boolean;
+  isFR?: boolean;
   isUnavailable?: boolean;
   isOwnDri: boolean;
   muted?: boolean;
@@ -3231,9 +3266,9 @@ function AssignChip(props: {
   onRemove: () => void;
   onStartExtend: () => void;
 }) {
-  const { project, isOwnDri, isPto: pto, isUnavailable: unavail } = props;
-  const isSentinelChip = pto || unavail;
-  const ink = isSentinelChip ? 'var(--color-ink-600)' : undefined;
+  const { project, isOwnDri, isPto: pto, isFR: fr, isUnavailable: unavail } = props;
+  const isSentinelChip = pto || fr || unavail;
+  const ink = isSentinelChip ? 'var(--color-ink-700)' : undefined;
   const baseClass =
     'group/chip relative inline-flex max-w-full min-w-0 cursor-grab items-center gap-1 rounded-md px-2.5 py-[3px] pr-3 text-left text-[11px] font-semibold leading-tight transition-transform active:cursor-grabbing hover:-translate-y-px';
   const chipStyle: React.CSSProperties = isSentinelChip
@@ -3253,6 +3288,8 @@ function AssignChip(props: {
       title={
         pto
           ? 'PTO'
+          : fr
+          ? 'First responder duty'
           : unavail
           ? 'Not available'
           : project.name +
@@ -3264,6 +3301,8 @@ function AssignChip(props: {
         ' ' +
         (pto
           ? 'border border-dashed border-ink-400/60 pattern-stripe-soft-rev uppercase tracking-[0.06em]'
+          : fr
+          ? 'border border-amber-400/70 bg-amber-100 uppercase tracking-[0.06em]'
           : unavail
           ? 'border border-ink-400/60 bg-ink-300 uppercase tracking-[0.06em]'
           : 'chip-tint border shadow-[0_1px_2px_rgba(15,23,42,0.04)]') +
@@ -3274,6 +3313,10 @@ function AssignChip(props: {
       {pto ? (
         <span className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center text-[10px]" aria-hidden>
           ☀
+        </span>
+      ) : fr ? (
+        <span className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center text-[10px] text-amber-700" aria-hidden>
+          ⚡
         </span>
       ) : unavail ? (
         <span className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center text-[10px]" aria-hidden>
@@ -3290,7 +3333,7 @@ function AssignChip(props: {
         )
       )}
       <span className="min-w-0 truncate leading-tight">
-        {project.name}
+        {fr ? 'FR' : project.name}
       </span>
       <span
         onClick={e => {
@@ -3743,6 +3786,20 @@ function ProjectPicker(props: {
           />
           <span className="font-semibold uppercase tracking-[0.06em] text-ink-600">PTO</span>
           <span className="ml-auto text-[11px] text-ink-400">time off</span>
+        </button>
+        <button
+          className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[13px] text-ink-700 transition hover:bg-ink-100"
+          onClick={() => props.onPick(FR_ID)}
+          title="Mark this week as first-responder (on-call) duty"
+        >
+          <span
+            className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-full border border-amber-400/80 bg-amber-100 text-[8px] text-amber-700"
+            aria-hidden
+          >
+            ⚡
+          </span>
+          <span className="font-semibold uppercase tracking-[0.06em] text-ink-600">FR</span>
+          <span className="ml-auto text-[11px] text-ink-400">first responder</span>
         </button>
         <button
           className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[13px] text-ink-700 transition hover:bg-ink-100"

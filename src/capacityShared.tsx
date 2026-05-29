@@ -1,7 +1,11 @@
 import type { PlanState, Quarter } from './types';
 
 const PTO_ID = '__pto__';
+const FR_ID = '__fr__';
 const UNAVAILABLE_ID = '__unavailable__';
+
+const isSentinel = (id: string): boolean =>
+  id === PTO_ID || id === FR_ID || id === UNAVAILABLE_ID;
 
 /** Fixed conversion: 1 engineering-month = 4 weeks. */
 export const WEEKS_PER_EM = 4;
@@ -37,6 +41,10 @@ export type CapacityInfo = {
   /** Planned eng-weeks per project, computed from non-sentinel assignments
    *  with fractional crediting for multi-project weeks. */
   plannedByProject: Record<string, number>;
+  /** Count of person-weeks marked as first-responder duty in the plan.
+   *  Independent from `quarter.firstResponderWeeks`; the QuarterModal surfaces
+   *  any mismatch so users can keep config + plan in sync. */
+  frWeeksInPlan: number;
 };
 
 /** One-stop derivation of all capacity-related numbers from a plan state.
@@ -62,14 +70,16 @@ export function deriveCapacity(state: PlanState): CapacityInfo {
   // Planned-per-project: each assignment contributes 1/N where N is the
   // number of non-sentinel assignments for that person in that week.
   const counts = new Map<string, number>();
+  let frWeeksInPlan = 0;
   for (const a of state.assignments) {
-    if (a.projectId === PTO_ID || a.projectId === UNAVAILABLE_ID) continue;
+    if (a.projectId === FR_ID) frWeeksInPlan += 1;
+    if (isSentinel(a.projectId)) continue;
     const key = `${a.personId}\0${a.weekId}`;
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
   const plannedByProject: Record<string, number> = {};
   for (const a of state.assignments) {
-    if (a.projectId === PTO_ID || a.projectId === UNAVAILABLE_ID) continue;
+    if (isSentinel(a.projectId)) continue;
     const key = `${a.personId}\0${a.weekId}`;
     const n = counts.get(key) ?? 1;
     plannedByProject[a.projectId] = (plannedByProject[a.projectId] ?? 0) + 1 / n;
@@ -86,6 +96,7 @@ export function deriveCapacity(state: PlanState): CapacityInfo {
     demandEM,
     gap: capacityEM - demandEM,
     plannedByProject,
+    frWeeksInPlan,
   };
 }
 
