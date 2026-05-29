@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { fmtNum, WEEKS_PER_EM, type CapacityInfo } from './capacityShared';
 import { ProjectEditModal } from './ProjectModal';
 import type { Buffer, PlanState, Project, Quarter } from './types';
@@ -109,6 +109,41 @@ function BarRow({
   const under = hasConfiguredQuarter && delta > 0.0001;
   const deltaAbs = Math.abs(delta);
   const hasHover = highlightedProjectId != null;
+  const hovered = segments.find(s => s.id === highlightedProjectId) || null;
+
+  // Refs to each segment element so we can fixed-position a tooltip above it
+  // (the bars live inside an overflow-hidden panel, so an absolutely-positioned
+  // tooltip would get clipped).
+  const segRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const [tooltipBox, setTooltipBox] = useState<{ left: number; top: number; placement: 'above' | 'below' } | null>(null);
+
+  useLayoutEffect(() => {
+    if (!hovered) {
+      setTooltipBox(null);
+      return;
+    }
+    const el = segRefs.current[hovered.id];
+    if (!el) {
+      setTooltipBox(null);
+      return;
+    }
+    const update = () => {
+      const r = el.getBoundingClientRect();
+      const cx = r.left + r.width / 2;
+      // Prefer above; flip below if there isn't ~36px of room above
+      const placement: 'above' | 'below' = r.top > 36 ? 'above' : 'below';
+      const top = placement === 'above' ? r.top - 6 : r.bottom + 6;
+      setTooltipBox({ left: cx, top, placement });
+    };
+    update();
+    // Re-read on scroll/resize while the hover persists
+    window.addEventListener('scroll', update, true);
+    window.addEventListener('resize', update);
+    return () => {
+      window.removeEventListener('scroll', update, true);
+      window.removeEventListener('resize', update);
+    };
+  }, [hovered]);
 
   return (
     <div className="flex items-center gap-3">
@@ -125,6 +160,7 @@ function BarRow({
           return (
             <div
               key={seg.id}
+              ref={el => { segRefs.current[seg.id] = el; }}
               onMouseEnter={onHoverProject ? () => onHoverProject(seg.id) : undefined}
               className={
                 'absolute top-0 flex h-full items-center overflow-hidden px-1.5 text-[10px] font-semibold tabular-nums transition-[transform,box-shadow,opacity] duration-100 ' +
@@ -139,7 +175,6 @@ function BarRow({
                 justifyContent: seg.pct > 10 ? 'flex-start' : 'center',
                 cursor: onHoverProject ? 'pointer' : undefined,
               }}
-              title={`${seg.name} — ${fmtNum(seg.em, 1)} EM${seg.overCapacity ? ' (over capacity)' : ''}`}
             >
               {seg.pct > 6 && (
                 <span className="flex w-full min-w-0 items-baseline gap-1.5">
@@ -167,6 +202,34 @@ function BarRow({
           </div>
         )}
       </div>
+      {hovered && tooltipBox && (
+        <div
+          className="pointer-events-none fixed z-50 whitespace-nowrap rounded-md bg-ink-900 px-2 py-1 text-[11px] font-semibold text-white shadow-lg"
+          style={{
+            left: tooltipBox.left,
+            top: tooltipBox.top,
+            transform:
+              tooltipBox.placement === 'above'
+                ? 'translate(-50%, -100%)'
+                : 'translate(-50%, 0)',
+          }}
+          role="tooltip"
+        >
+          <span>{hovered.name || 'Untitled'}</span>
+          <span className="ml-1.5 text-[10px] font-normal opacity-80">
+            {fmtNum(hovered.em, 2)} EM{hovered.overCapacity ? ' · over capacity' : ''}
+          </span>
+          <span
+            className={
+              'absolute left-1/2 h-0 w-0 -translate-x-1/2 border-x-[5px] border-x-transparent ' +
+              (tooltipBox.placement === 'above'
+                ? 'top-full border-t-[5px] border-t-ink-900'
+                : 'bottom-full border-b-[5px] border-b-ink-900')
+            }
+            aria-hidden
+          />
+        </div>
+      )}
       <div className="w-[96px] shrink-0 text-right">
         {hideDelta || (!over && !under) ? (
           <div className="text-[12px] font-semibold tabular-nums text-ink-400">
