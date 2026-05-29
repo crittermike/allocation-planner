@@ -1216,11 +1216,6 @@ function PlanView({
                 {unrankedCount} unranked
               </span>
             )}
-            {!panel.collapsed && (
-              <span className="hidden text-[12px] text-ink-500 lg:inline">
-                Drag the colored chip onto a cell, or click any cell to pick.
-              </span>
-            )}
             <span className="flex-1" />
             {!panel.collapsed && (
               <>
