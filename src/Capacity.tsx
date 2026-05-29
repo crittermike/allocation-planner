@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { fmtNum, WEEKS_PER_EM, type CapacityInfo } from './capacityShared';
 import { ProjectEditModal } from './ProjectModal';
-import type { Buffer, PlanState, Project, Quarter } from './types';
+import type { Buffer, Person, PlanState, Project, Quarter } from './types';
 
 type ID = string;
 
@@ -616,6 +616,8 @@ export function QuarterModal({
 
 export function PrioritizationTable({
   initiatives,
+  people,
+  peopleById,
   capacityEM,
   demandEM,
   fitMarkerIndex,
@@ -624,7 +626,7 @@ export function PrioritizationTable({
   updateProject,
   descopeInitiative,
   removeInitiative,
-  reorderInitiative,
+  moveProjectToIndex,
   weeksPerEM,
   plannedByProject,
   onEdit,
@@ -632,6 +634,8 @@ export function PrioritizationTable({
   onHoverProject,
 }: {
   initiatives: Project[];
+  people: Person[];
+  peopleById: Record<ID, Person>;
   capacityEM: number;
   demandEM: number;
   fitMarkerIndex: number;
@@ -640,14 +644,23 @@ export function PrioritizationTable({
   updateProject: (id: ID, patch: Partial<Project>) => void;
   descopeInitiative: (id: ID) => void;
   removeInitiative: (id: ID) => void;
-  reorderInitiative: (id: ID, dir: -1 | 1) => void;
+  moveProjectToIndex: (id: ID, targetIndex: number) => void;
   weeksPerEM: number;
   plannedByProject: Record<ID, number>;
   onEdit: (id: ID) => void;
   highlightedProjectId?: ID | null;
   onHoverProject?: (id: ID | null) => void;
 }) {
-  void capacityEM; void demandEM; // referenced in fitMarkerIndex compute upstream
+  void capacityEM; void demandEM; void people; // people reserved for future inline pickers
+  const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
+  const [dragOverPos, setDragOverPos] = useState<'before' | 'after'>('before');
+  const [draggingId, setDraggingId] = useState<ID | null>(null);
+
+  const clearDragState = () => {
+    setDragOverIdx(null);
+    setDraggingId(null);
+  };
+
   if (initiatives.length === 0) {
     return (
       <div className="px-6 py-12 text-center text-[13px] text-ink-500">
@@ -667,12 +680,14 @@ export function PrioritizationTable({
     <table
       className="w-full"
       onMouseLeave={onHoverProject ? () => onHoverProject(null) : undefined}
+      onDragEnd={clearDragState}
     >
       <thead>
         <tr className="border-b border-ink-200 bg-ink-50/60 text-[10.5px] font-semibold uppercase tracking-[0.06em] text-ink-500">
-          <th className="w-[44px] px-2 py-2 text-center">#</th>
+          <th className="w-[52px] px-2 py-2 text-center">#</th>
           <th className="px-2 py-2 text-left">Project</th>
-          <th className="w-[120px] px-2 py-2 text-right">EM</th>
+          <th className="w-[120px] px-2 py-2 text-left">DRI</th>
+          <th className="w-[180px] px-2 py-2 text-right">Estimate (Eng Months)</th>
           <th className="px-2 py-2 text-left">Notes</th>
           <th className="w-[100px] px-2 py-2 text-right">Actions</th>
         </tr>
@@ -683,7 +698,7 @@ export function PrioritizationTable({
             key={p.id}
             project={p}
             index={idx}
-            isLast={idx === initiatives.length - 1}
+            dri={p.driId ? peopleById[p.driId] ?? null : null}
             showWhatFits={showWhatFits}
             pastFitLine={fitMarkerIndex !== -1 && idx >= fitMarkerIndex}
             isFitLine={showWhatFits && idx === fitMarkerIndex}
@@ -691,17 +706,37 @@ export function PrioritizationTable({
             plannedWeeks={plannedByProject[p.id] ?? 0}
             isHighlighted={highlightedProjectId === p.id}
             isDimmed={highlightedProjectId != null && highlightedProjectId !== p.id}
+            isBeingDragged={draggingId === p.id}
+            dropIndicator={dragOverIdx === idx ? dragOverPos : null}
             onHover={onHoverProject ? () => onHoverProject(p.id) : undefined}
             onUpdate={patch => updateProject(p.id, patch)}
             onEdit={() => onEdit(p.id)}
             onDescope={() => descopeInitiative(p.id)}
             onDelete={() => {
-              if (confirm(`Permanently delete "${p.name}"? Descoping (×) keeps it hidden but recoverable.`)) {
+              if (confirm(`Permanently delete "${p.name}"? Descoping keeps it hidden but recoverable.`)) {
                 removeInitiative(p.id);
               }
             }}
-            onMoveUp={() => reorderInitiative(p.id, -1)}
-            onMoveDown={() => reorderInitiative(p.id, 1)}
+            onDragStart={() => setDraggingId(p.id)}
+            onDragOverRow={pos => {
+              if (draggingId == null) return;
+              setDragOverIdx(idx);
+              setDragOverPos(pos);
+            }}
+            onDropRow={() => {
+              if (!draggingId) return;
+              const fromIdx = initiatives.findIndex(it => it.id === draggingId);
+              if (fromIdx === -1) {
+                clearDragState();
+                return;
+              }
+              let target = idx + (dragOverPos === 'after' ? 1 : 0);
+              if (fromIdx < target) target -= 1;
+              if (target !== fromIdx) {
+                moveProjectToIndex(draggingId, target);
+              }
+              clearDragState();
+            }}
           />
         ))}
       </tbody>
@@ -712,7 +747,7 @@ export function PrioritizationTable({
 function InitiativeRow({
   project,
   index,
-  isLast,
+  dri,
   showWhatFits,
   pastFitLine,
   isFitLine,
@@ -720,17 +755,20 @@ function InitiativeRow({
   plannedWeeks,
   isHighlighted,
   isDimmed,
+  isBeingDragged,
+  dropIndicator,
   onHover,
   onUpdate,
   onEdit,
   onDescope,
   onDelete,
-  onMoveUp,
-  onMoveDown,
+  onDragStart,
+  onDragOverRow,
+  onDropRow,
 }: {
   project: Project;
   index: number;
-  isLast: boolean;
+  dri: Person | null;
   showWhatFits: boolean;
   pastFitLine: boolean;
   isFitLine: boolean;
@@ -738,18 +776,23 @@ function InitiativeRow({
   plannedWeeks: number;
   isHighlighted?: boolean;
   isDimmed?: boolean;
+  isBeingDragged?: boolean;
+  dropIndicator: 'before' | 'after' | null;
   onHover?: () => void;
   onUpdate: (patch: Partial<Project>) => void;
   onEdit: () => void;
   onDescope: () => void;
   onDelete: () => void;
-  onMoveUp: () => void;
-  onMoveDown: () => void;
+  onDragStart: () => void;
+  onDragOverRow: (pos: 'before' | 'after') => void;
+  onDropRow: () => void;
 }) {
+  void onUpdate; // future: inline DRI/notes editors
   const fadedClass = (showWhatFits && pastFitLine ? 'opacity-50' : '') + (isDimmed ? ' opacity-60' : '');
   const highlightClass = isHighlighted
     ? 'bg-amber-50/70 ring-1 ring-inset ring-amber-300/70'
-    : 'hover:bg-ink-50/40';
+    : '';
+  const draggingClass = isBeingDragged ? 'opacity-40' : '';
 
   const est = project.estimateEM;
   const plannedEM = weeksPerEM > 0 ? plannedWeeks / weeksPerEM : 0;
@@ -768,81 +811,106 @@ function InitiativeRow({
     emBadgeTitle = `Planned ${fmtNum(plannedEM)} EM, no estimate — click to set`;
   }
 
+  const handleRowDragOver = (e: React.DragEvent<HTMLTableRowElement>) => {
+    if (!e.dataTransfer.types.includes('application/x-reorder-project')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const rect = e.currentTarget.getBoundingClientRect();
+    const midY = rect.top + rect.height / 2;
+    onDragOverRow(e.clientY < midY ? 'before' : 'after');
+  };
+  const handleRowDrop = (e: React.DragEvent<HTMLTableRowElement>) => {
+    if (!e.dataTransfer.types.includes('application/x-reorder-project')) return;
+    e.preventDefault();
+    onDropRow();
+  };
+
+  const indicatorClass = dropIndicator === 'before'
+    ? 'border-t-2 border-t-brand-500'
+    : dropIndicator === 'after'
+      ? 'border-b-2 border-b-brand-500'
+      : 'border-b border-ink-100';
+
   return (
     <>
       {isFitLine && showWhatFits && (
         <tr aria-hidden>
-          <td colSpan={5} className="border-y-2 border-dashed border-rose-300 bg-rose-50/40 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-rose-700">
+          <td colSpan={6} className="border-y-2 border-dashed border-rose-300 bg-rose-50/40 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-rose-700">
             ↓ Below the line: over capacity. Consider descoping.
           </td>
         </tr>
       )}
       <tr
         onMouseEnter={onHover}
-        className={'border-b border-ink-100 align-middle transition ' + highlightClass + ' ' + fadedClass}
+        onDragOver={handleRowDragOver}
+        onDrop={handleRowDrop}
+        className={'group align-middle transition ' + indicatorClass + ' ' + highlightClass + ' ' + fadedClass + ' ' + draggingClass}
       >
         <td className="px-2 py-2 text-center align-middle">
-          <div className="inline-flex flex-col items-center gap-0">
+          <div className="inline-flex items-center gap-1">
             <button
               type="button"
-              onClick={onMoveUp}
-              disabled={index === 0}
-              aria-label="Move up"
-              className="text-ink-400 hover:text-ink-700 disabled:opacity-25"
+              aria-label="Drag to reorder"
+              title="Drag to reorder"
+              draggable
+              onDragStart={e => {
+                e.dataTransfer.setData('application/x-reorder-project', project.id);
+                e.dataTransfer.effectAllowed = 'move';
+                onDragStart();
+              }}
+              className="cursor-grab text-ink-300 opacity-0 transition group-hover:opacity-100 hover:text-ink-700 active:cursor-grabbing"
             >
-              <svg width="10" height="6" viewBox="0 0 10 6" aria-hidden><path d="M1 5L5 1L9 5" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" /></svg>
+              <svg width="10" height="14" viewBox="0 0 10 14" aria-hidden>
+                <g fill="currentColor">
+                  <circle cx="2" cy="2" r="1.25" />
+                  <circle cx="8" cy="2" r="1.25" />
+                  <circle cx="2" cy="7" r="1.25" />
+                  <circle cx="8" cy="7" r="1.25" />
+                  <circle cx="2" cy="12" r="1.25" />
+                  <circle cx="8" cy="12" r="1.25" />
+                </g>
+              </svg>
             </button>
-            <span className="text-[12px] font-semibold tabular-nums text-ink-700">{project.priority ?? '—'}</span>
-            <button
-              type="button"
-              onClick={onMoveDown}
-              disabled={isLast}
-              aria-label="Move down"
-              className="text-ink-400 hover:text-ink-700 disabled:opacity-25"
-            >
-              <svg width="10" height="6" viewBox="0 0 10 6" aria-hidden><path d="M1 1L5 5L9 1" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" /></svg>
-            </button>
+            <span className="text-[12px] font-semibold tabular-nums text-ink-700">{project.priority ?? index + 1}</span>
           </div>
         </td>
         <td className="px-2 py-2">
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={onEdit}
-              title="Edit project"
-              className="inline-flex min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 py-1 text-left transition hover:bg-ink-50"
+          <button
+            type="button"
+            onClick={onEdit}
+            title="Edit project"
+            className="inline-flex w-full min-w-0 items-center gap-2 rounded-md px-1.5 py-1 text-left"
+          >
+            <span
+              className="inline-flex h-5 shrink-0 cursor-grab items-center rounded-full border border-black/5 px-2 text-[11px] font-semibold tracking-tight active:cursor-grabbing"
+              style={{ background: project.color, color: inkFor(project.color) }}
+              draggable
+              onDragStart={e => {
+                e.stopPropagation();
+                e.dataTransfer.setData('application/x-project', project.id);
+                e.dataTransfer.effectAllowed = 'copy';
+              }}
+              title="Drag to chart to assign"
+              aria-hidden
             >
-              <span
-                className="inline-flex h-5 shrink-0 cursor-grab items-center rounded-full border border-black/5 px-2 text-[11px] font-semibold tracking-tight active:cursor-grabbing"
-                style={{ background: project.color, color: inkFor(project.color) }}
-                draggable
-                onDragStart={e => {
-                  e.stopPropagation();
-                  e.dataTransfer.setData('application/x-project', project.id);
-                  e.dataTransfer.effectAllowed = 'copy';
-                }}
-                title="Drag to chart to assign"
-                aria-hidden
-              >
-                {project.name.slice(0, 1).toUpperCase() || '·'}
-              </span>
-              <span className="truncate text-[13.5px] font-medium text-ink-900">
-                {project.name || <span className="italic text-ink-400">Untitled</span>}
-              </span>
-            </button>
-            {project.url && (
-              <a
-                href={project.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                title={`Open ${project.url}`}
-                className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-ink-400 transition hover:bg-brand-50 hover:text-brand-600"
-                onClick={e => e.stopPropagation()}
-              >
-                ↗
-              </a>
-            )}
-          </div>
+              {project.name.slice(0, 1).toUpperCase() || '·'}
+            </span>
+            <span className="truncate text-[13.5px] font-medium text-ink-900">
+              {project.name || <span className="italic text-ink-400">Untitled</span>}
+            </span>
+          </button>
+        </td>
+        <td className="px-2 py-2 align-middle">
+          <button
+            type="button"
+            onClick={onEdit}
+            title={dri ? `DRI: ${dri.name} — click to edit` : 'No DRI — click to set'}
+            className="block w-full truncate rounded-md px-1.5 py-1 text-left text-[12.5px]"
+          >
+            {dri
+              ? <span className="truncate text-ink-700">{dri.name}</span>
+              : <span className="italic text-ink-300">—</span>}
+          </button>
         </td>
         <td className="px-2 py-2 text-right align-middle">
           <button
@@ -863,7 +931,7 @@ function InitiativeRow({
             type="button"
             onClick={onEdit}
             title={project.notes || 'Click to add notes'}
-            className="block w-full truncate rounded-md px-1.5 py-1 text-left text-[12.5px] text-ink-600 transition hover:bg-ink-50"
+            className="block w-full truncate rounded-md px-1.5 py-1 text-left text-[12.5px] text-ink-600"
           >
             {project.notes
               ? <span className="truncate">{project.notes}</span>
@@ -871,23 +939,52 @@ function InitiativeRow({
           </button>
         </td>
         <td className="px-2 py-2 text-right align-middle">
-          <div className="inline-flex flex-col gap-1">
+          <div className="inline-flex items-center gap-0.5">
+            {project.url && (
+              <a
+                href={project.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={`Open link: ${project.url}`}
+                aria-label="Open external link"
+                className="inline-flex h-7 w-7 items-center justify-center rounded text-ink-400 transition hover:bg-brand-50 hover:text-brand-600"
+                onClick={e => e.stopPropagation()}
+              >
+                <svg width="13" height="13" viewBox="0 0 14 14" aria-hidden fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M5 3H3v8h8V9" />
+                  <path d="M8 2h4v4" />
+                  <path d="M12 2l-5 5" />
+                </svg>
+              </a>
+            )}
             <button
               type="button"
               onClick={onDescope}
               title="Descope (hides from chart, recoverable)"
-              className="inline-flex h-6 items-center rounded border border-ink-200 bg-white px-2 text-[11px] font-medium text-ink-600 transition hover:border-rose-300 hover:bg-rose-50 hover:text-rose-700"
+              aria-label="Descope"
+              className="inline-flex h-7 w-7 items-center justify-center rounded text-ink-500 transition hover:bg-amber-50 hover:text-amber-700"
             >
-              Descope
+              <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="4" cy="11" r="2.2" />
+                <circle cx="12" cy="11" r="2.2" />
+                <path d="M5.8 9.5L13.5 3" />
+                <path d="M10.2 9.5L2.5 3" />
+              </svg>
             </button>
             <button
               type="button"
               onClick={onDelete}
               title="Delete permanently"
               aria-label="Delete"
-              className="inline-flex h-5 items-center justify-center rounded text-[11px] text-ink-400 transition hover:bg-rose-50 hover:text-rose-700"
+              className="inline-flex h-7 w-7 items-center justify-center rounded text-ink-400 transition hover:bg-rose-50 hover:text-rose-700"
             >
-              Delete
+              <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M3 4.5h10" />
+                <path d="M6 4.5V3a1 1 0 011-1h2a1 1 0 011 1v1.5" />
+                <path d="M4.5 4.5l.7 8.5a1 1 0 001 .9h3.6a1 1 0 001-.9l.7-8.5" />
+                <path d="M7 7.5v4" />
+                <path d="M9 7.5v4" />
+              </svg>
             </button>
           </div>
         </td>

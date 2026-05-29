@@ -654,19 +654,18 @@ function PlanView({
       projects: s.projects.map(p => (p.id === id ? { ...p, descoped: false } : p)),
     }));
   };
-  const reorderProjectPriority = (id: ID, dir: -1 | 1) => {
+  const moveProjectToIndex = (id: ID, targetIndex: number) => {
     pushUndo();
     setState(s => {
       const active = sortByPriority(s.projects.filter(p => !p.descoped), s.projects);
-      const idx = active.findIndex(p => p.id === id);
-      if (idx === -1) return s;
-      const swapIdx = idx + dir;
-      if (swapIdx < 0 || swapIdx >= active.length) return s;
-      // Renumber priorities densely (1..N), then swap the two relevant entries.
-      const renumbered = active.map((p, i) => ({ ...p, priority: i + 1 }));
-      const tmp = renumbered[idx].priority;
-      renumbered[idx].priority = renumbered[swapIdx].priority;
-      renumbered[swapIdx].priority = tmp;
+      const fromIdx = active.findIndex(p => p.id === id);
+      if (fromIdx === -1) return s;
+      let toIdx = Math.max(0, Math.min(active.length - 1, targetIndex));
+      if (fromIdx === toIdx) return s;
+      const reordered = [...active];
+      const [moved] = reordered.splice(fromIdx, 1);
+      reordered.splice(toIdx, 0, moved);
+      const renumbered = reordered.map((p, i) => ({ ...p, priority: i + 1 }));
       const byId = new Map(renumbered.map(p => [p.id, p]));
       return {
         ...s,
@@ -1258,6 +1257,8 @@ function PlanView({
             <div className="flex-1 overflow-auto">
               <PrioritizationTable
                 initiatives={activeInitiatives}
+                people={state.people}
+                peopleById={peopleById}
                 capacityEM={cap.capacityEM}
                 demandEM={cap.demandEM}
                 fitMarkerIndex={fitMarkerIndex}
@@ -1271,7 +1272,7 @@ function PlanView({
                 updateProject={updateProject}
                 descopeInitiative={descopeProject}
                 removeInitiative={removeProject}
-                reorderInitiative={reorderProjectPriority}
+                moveProjectToIndex={moveProjectToIndex}
                 weeksPerEM={cap.quarter.weeksPerEM}
                 plannedByProject={plannedByProject}
                 onEdit={id => { setIsAddingProject(false); setEditingProjectId(id); }}
