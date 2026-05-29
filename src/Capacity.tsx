@@ -109,7 +109,10 @@ function BarRow({
   const under = hasConfiguredQuarter && delta > 0.0001;
   const deltaAbs = Math.abs(delta);
   const hasHover = highlightedProjectId != null;
-  const hovered = segments.find(s => s.id === highlightedProjectId) || null;
+  // Local hover — only show the tooltip on the bar the cursor is actually over,
+  // even though `highlightedProjectId` is shared across both bars for cross-chart highlight.
+  const [localHoverId, setLocalHoverId] = useState<ID | null>(null);
+  const hovered = segments.find(s => s.id === localHoverId) || null;
 
   // Refs to each segment element so we can fixed-position a tooltip above it
   // (the bars live inside an overflow-hidden panel, so an absolutely-positioned
@@ -145,6 +148,15 @@ function BarRow({
     };
   }, [hovered]);
 
+  const handleSegmentEnter = (id: ID) => {
+    setLocalHoverId(id);
+    onHoverProject?.(id);
+  };
+  const handleBarLeave = () => {
+    setLocalHoverId(null);
+    onHoverProject?.(null);
+  };
+
   return (
     <div className="flex items-center gap-3">
       <div className="w-[68px] shrink-0 text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-500">
@@ -152,7 +164,7 @@ function BarRow({
       </div>
       <div
         className="relative h-9 flex-1 overflow-visible rounded-lg bg-ink-100"
-        onMouseLeave={onHoverProject ? () => onHoverProject(null) : undefined}
+        onMouseLeave={handleBarLeave}
       >
         {segments.map(seg => {
           const isHovered = highlightedProjectId === seg.id;
@@ -161,7 +173,7 @@ function BarRow({
             <div
               key={seg.id}
               ref={el => { segRefs.current[seg.id] = el; }}
-              onMouseEnter={onHoverProject ? () => onHoverProject(seg.id) : undefined}
+              onMouseEnter={() => handleSegmentEnter(seg.id)}
               className={
                 'absolute top-0 flex h-full items-center overflow-hidden px-1.5 text-[10px] font-semibold tabular-nums transition-[transform,box-shadow,opacity] duration-100 ' +
                 (isHovered ? 'z-10 -translate-y-px shadow-md ring-2 ring-ink-900 ring-offset-1 ring-offset-white' : '')
