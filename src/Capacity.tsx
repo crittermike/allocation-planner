@@ -91,6 +91,7 @@ function BarRow({
   hideDelta,
   highlightedProjectId,
   onHoverProject,
+  markerVariant = 'standalone',
 }: {
   label: string;
   segments: BarSegment[];
@@ -103,6 +104,7 @@ function BarRow({
   hideDelta?: boolean;
   highlightedProjectId?: ID | null;
   onHoverProject?: (id: ID | null) => void;
+  markerVariant?: 'standalone' | 'top' | 'bottom';
 }) {
   const delta = capacity - total;
   const over = hasConfiguredQuarter && delta < -0.0001;
@@ -200,11 +202,20 @@ function BarRow({
         })}
         {hasConfiguredQuarter && capacityEM > 0 && capacityPct < 100 && (
           <div
-            className="pointer-events-none absolute -top-1 bottom-[-4px] w-[2px] bg-ink-900"
+            className={
+              'pointer-events-none absolute w-[2px] bg-ink-900 ' +
+              (markerVariant === 'top'
+                ? '-top-1 -bottom-[11px]'
+                : markerVariant === 'bottom'
+                  ? '-top-[11px] -bottom-1'
+                  : '-top-1 -bottom-1')
+            }
             style={{ left: `calc(${capacityPct}% - 1px)` }}
             title={`Capacity: ${fmtNum(capacityEM, 1)} EM`}
           >
-            <div className="absolute -right-1 -top-2 h-2 w-2 rounded-full bg-ink-900" />
+            {markerVariant !== 'bottom' && (
+              <div className="absolute -right-1 -top-2 h-2 w-2 rounded-full bg-ink-900" />
+            )}
           </div>
         )}
         {segments.length === 0 && (
@@ -324,6 +335,7 @@ export function CapacityBars({
         capacity={capacityEM}
         highlightedProjectId={highlightedProjectId}
         onHoverProject={onHoverProject}
+        markerVariant="top"
       />
       <BarRow
         label="Actual"
@@ -336,6 +348,7 @@ export function CapacityBars({
         capacity={capacityEM}
         highlightedProjectId={highlightedProjectId}
         onHoverProject={onHoverProject}
+        markerVariant="bottom"
       />
     </div>
   );
