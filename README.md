@@ -64,7 +64,7 @@ Cost: ~$2-3/month for a `shared-cpu-1x` 256MB machine + 1GB volume, kept warm fo
 type State = {
   title: string;
   people: { id; name }[];
-  projects: { id; name; color; driId; url?; estimatedWeeks? }[];
+  projects: { id; name; color; driId; url?; estimateEM?; priority?; bigRock?; descoped?; notes? }[];
   iterations: { id; startDate /* YYYY-MM-DD Monday */ }[];
   assignments: { id; personId; weekId /* `${iterId}:0|1` */; projectId }[];
 };

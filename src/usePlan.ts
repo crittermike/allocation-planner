@@ -6,6 +6,22 @@ export type ConnState = 'connecting' | 'open' | 'closed' | 'missing';
 
 export type PasswordError = 'wrong_password' | 'too_many_attempts' | 'auth_required' | 'password_too_short' | 'password_too_long' | 'unknown';
 
+/** Migrate plan state from older schemas so old plans keep working.
+ *  Currently handles: legacy `Project.estimatedWeeks` (eng-weeks) →
+ *  `Project.estimateEM` (eng-months) using the canonical 4-weeks-per-EM ratio. */
+function migrateState(raw: any): PlanState {
+  if (!raw || typeof raw !== 'object') return raw;
+  const projects = Array.isArray(raw.projects)
+    ? raw.projects.map((p: any) => {
+        if (p && p.estimateEM == null && typeof p.estimatedWeeks === 'number') {
+          return { ...p, estimateEM: p.estimatedWeeks / 4 };
+        }
+        return p;
+      })
+    : raw.projects;
+  return { ...raw, projects } as PlanState;
+}
+
 export type UsePlan = {
   state: PlanState | null;
   setState: (updater: (s: PlanState) => PlanState) => void;
@@ -105,10 +121,10 @@ export function usePlan(slug: string | null): UsePlan {
         let msg: any;
         try { msg = JSON.parse(ev.data); } catch { return; }
         if (msg.type === 'hello') {
-          setLocalState(msg.state);
+          setLocalState(migrateState(msg.state));
           setPeers(msg.peers ?? 1);
         } else if (msg.type === 'state') {
-          setLocalState(msg.state);
+          setLocalState(migrateState(msg.state));
         } else if (msg.type === 'peers') {
           setPeers(msg.peers ?? 1);
         }

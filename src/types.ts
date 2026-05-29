@@ -7,10 +7,24 @@ export type Project = {
   color: string;
   driId: ID | null;
   url?: string;
-  estimatedWeeks?: number;
+  /** Capacity planning fields (all optional, additive). */
+  priority?: number;
+  descoped?: boolean;
+  estimateEM?: number;
+  notes?: string;
 };
-export type Iteration = { id: ID; startDate: string };
+export type Iteration = { id: ID; startDate: string; goal?: string };
 export type Assignment = { id: ID; personId: ID; weekId: string; projectId: ID };
+
+export type Buffer = { id: ID; label: string; pct: number; note?: string };
+export type Quarter = {
+  engineers: number;
+  engineersNote?: string;
+  weeksInQuarter: number;
+  firstResponderWeeks: number;
+  weeksPerEM: number;
+  buffers: Buffer[];
+};
 
 export type PlanState = {
   title: string;
@@ -19,6 +33,7 @@ export type PlanState = {
   iterations: Iteration[];
   assignments: Assignment[];
   weekNotes?: Record<string, string>;
+  quarter?: Quarter;
 };
 
 export type PlanSummary = {

@@ -1,6 +1,17 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { navigate } from './router';
 import { usePlan, type ConnState, type PasswordError } from './usePlan';
+import {
+  CapacityBars,
+  DEFAULT_BUFFERS,
+  DescopedDrawer,
+  PrioritizationTable,
+  QuarterModal,
+  ensureQuarter,
+  exportPlanMarkdown,
+} from './Capacity';
+import { deriveCapacity } from './capacityShared';
+import { ColorPopover, ProjectEditModal } from './ProjectModal';
 
 type ID = string;
 
@@ -11,10 +22,23 @@ type Project = {
   color: string;
   driId: ID | null;
   url?: string;
-  estimatedWeeks?: number;
+  priority?: number;
+  descoped?: boolean;
+  estimateEM?: number;
+  notes?: string;
 };
 type Iteration = { id: ID; startDate: string; goal?: string };
 type Assignment = { id: ID; personId: ID; weekId: string; projectId: ID };
+
+type Buffer = { id: ID; label: string; pct: number; note?: string };
+type Quarter = {
+  engineers: number;
+  engineersNote?: string;
+  weeksInQuarter: number;
+  firstResponderWeeks: number;
+  weeksPerEM: number;
+  buffers: Buffer[];
+};
 
 type State = {
   title: string;
@@ -23,6 +47,7 @@ type State = {
   iterations: Iteration[];
   assignments: Assignment[];
   weekNotes?: Record<string, string>;
+  quarter?: Quarter;
 };
 
 const PANEL_KEY = 'gantt-maker-panel-v1';
@@ -375,6 +400,17 @@ function UnlockPrompt({
   );
 }
 
+function sortByPriority(active: Project[], allProjects: Project[]): Project[] {
+  const order = new Map(allProjects.map((p, i) => [p.id, i]));
+  return [...active].sort((a, b) => {
+    const pa = a.priority ?? Number.MAX_SAFE_INTEGER;
+    const pb = b.priority ?? Number.MAX_SAFE_INTEGER;
+    if (pa !== pb) return pa - pb;
+    // Tiebreak by original index so legacy projects keep their order.
+    return (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0);
+  });
+}
+
 function PlanView({
   slug,
   state,
@@ -424,25 +460,8 @@ function PlanView({
     () => state.iterations.find(iter => iterationToneById[iter.id] === 'current')?.id ?? null,
     [iterationToneById, state.iterations],
   );
-  const plannedByProject = useMemo(() => {
-    // First pass: count non-sentinel assignments per person per week
-    const counts = new Map<string, number>();
-    for (const a of state.assignments) {
-      if (isSentinel(a.projectId)) continue;
-      const key = `${a.personId}\0${a.weekId}`;
-      counts.set(key, (counts.get(key) ?? 0) + 1);
-    }
-    // Second pass: each assignment contributes 1/N where N = total non-sentinel
-    // assignments for that person in that week
-    const map: Record<ID, number> = {};
-    for (const a of state.assignments) {
-      if (isSentinel(a.projectId)) continue;
-      const key = `${a.personId}\0${a.weekId}`;
-      const n = counts.get(key) ?? 1;
-      map[a.projectId] = (map[a.projectId] ?? 0) + 1 / n;
-    }
-    return map;
-  }, [state.assignments]);
+  const cap = useMemo(() => deriveCapacity(state), [state]);
+  const plannedByProject = cap.plannedByProject;
 
   /* ---------- undo / redo ---------- */
   const UNDO_CAP = 50;
@@ -567,13 +586,18 @@ function PlanView({
   const addProject = (): ID => {
     pushUndo();
     const id = uid();
-    setState(s => ({
-      ...s,
-      projects: [
-        ...s.projects,
-        { id, name: 'New project', color: COLORS[s.projects.length % COLORS.length], driId: null },
-      ],
-    }));
+    setState(s => {
+      const maxPriority = s.projects
+        .filter(p => !p.descoped)
+        .reduce((m, p) => Math.max(m, p.priority ?? 0), 0);
+      return {
+        ...s,
+        projects: [
+          ...s.projects,
+          { id, name: 'New project', color: COLORS[s.projects.length % COLORS.length], driId: null, priority: maxPriority + 1 },
+        ],
+      };
+    });
     return id;
   };
   const removeProject = (id: ID) => {
@@ -583,6 +607,103 @@ function PlanView({
       projects: s.projects.filter(p => p.id !== id),
       assignments: s.assignments.filter(a => a.projectId !== id),
     }));
+  };
+  const descopeProject = (id: ID) => {
+    const proj = state.projects.find(p => p.id === id);
+    if (!proj) return;
+    const assignedCount = state.assignments.filter(a => a.projectId === id).length;
+    if (assignedCount > 0) {
+      const ok = confirm(
+        `"${proj.name}" has ${assignedCount} scheduled assignment${assignedCount === 1 ? '' : 's'}.\n\n` +
+        `Descope anyway? The assignments stay on the chart but the project is hidden from the picker and counted in "Descoped".`,
+      );
+      if (!ok) return;
+    }
+    pushUndo();
+    setState(s => ({
+      ...s,
+      projects: s.projects.map(p => (p.id === id ? { ...p, descoped: true } : p)),
+    }));
+  };
+  const restoreProject = (id: ID) => {
+    pushUndo();
+    setState(s => ({
+      ...s,
+      projects: s.projects.map(p => (p.id === id ? { ...p, descoped: false } : p)),
+    }));
+  };
+  const reorderProjectPriority = (id: ID, dir: -1 | 1) => {
+    pushUndo();
+    setState(s => {
+      const active = sortByPriority(s.projects.filter(p => !p.descoped), s.projects);
+      const idx = active.findIndex(p => p.id === id);
+      if (idx === -1) return s;
+      const swapIdx = idx + dir;
+      if (swapIdx < 0 || swapIdx >= active.length) return s;
+      // Renumber priorities densely (1..N), then swap the two relevant entries.
+      const renumbered = active.map((p, i) => ({ ...p, priority: i + 1 }));
+      const tmp = renumbered[idx].priority;
+      renumbered[idx].priority = renumbered[swapIdx].priority;
+      renumbered[swapIdx].priority = tmp;
+      const byId = new Map(renumbered.map(p => [p.id, p]));
+      return {
+        ...s,
+        projects: s.projects.map(p => byId.get(p.id) ?? p),
+      };
+    });
+  };
+  const updateQuarter = (patch: Partial<NonNullable<State['quarter']>>) => {
+    pushUndo();
+    setState(s => {
+      const current = ensureQuarter(s);
+      return { ...s, quarter: { ...current, ...patch } };
+    });
+  };
+  const addBuffer = () => {
+    pushUndo();
+    setState(s => {
+      const current = ensureQuarter(s);
+      return {
+        ...s,
+        quarter: {
+          ...current,
+          buffers: [...current.buffers, { id: uid(), label: 'Buffer', pct: 5 }],
+        },
+      };
+    });
+  };
+  const updateBuffer = (bufferId: ID, patch: Partial<{ label: string; pct: number; note?: string }>) => {
+    pushUndo();
+    setState(s => {
+      const current = ensureQuarter(s);
+      return {
+        ...s,
+        quarter: {
+          ...current,
+          buffers: current.buffers.map(b => (b.id === bufferId ? { ...b, ...patch } : b)),
+        },
+      };
+    });
+  };
+  const removeBuffer = (bufferId: ID) => {
+    pushUndo();
+    setState(s => {
+      const current = ensureQuarter(s);
+      return {
+        ...s,
+        quarter: { ...current, buffers: current.buffers.filter(b => b.id !== bufferId) },
+      };
+    });
+  };
+  const installDefaultBuffers = () => {
+    pushUndo();
+    setState(s => {
+      const current = ensureQuarter(s);
+      return {
+        ...s,
+        quarter: { ...current, buffers: DEFAULT_BUFFERS.map(b => ({ ...b, id: uid() })) },
+      };
+    });
   };
   const addIteration = () => {
     pushUndo();
@@ -801,6 +922,42 @@ function PlanView({
   const [isAddingProject, setIsAddingProject] = useState(false);
   const [highlightedProjectId, setHighlightedProjectId] = useState<ID | null>(null);
   const [passwordDialog, setPasswordDialog] = useState<'set' | 'change' | 'remove' | null>(null);
+  const [quarterModalOpen, setQuarterModalOpen] = useState(false);
+  // Default to "show what fits" when the quarter is configured — if the user has
+  // set up capacity, they probably want to see the over/under-capacity cut line.
+  const [showWhatFits, setShowWhatFits] = useState<boolean>(() => !!state.quarter);
+  const [copiedMd, setCopiedMd] = useState(false);
+
+  const activeInitiatives = useMemo(
+    () => sortByPriority(state.projects.filter(p => !p.descoped), state.projects),
+    [state.projects],
+  );
+  const descopedInitiatives = useMemo(
+    () => state.projects.filter(p => p.descoped),
+    [state.projects],
+  );
+  const unrankedCount = activeInitiatives.filter(p => p.priority == null).length;
+  const fitMarkerIndex = useMemo(() => {
+    if (!cap.hasConfiguredQuarter) return -1;
+    let cum = 0;
+    for (let i = 0; i < activeInitiatives.length; i++) {
+      cum += activeInitiatives[i].estimateEM ?? 0;
+      if (cum > cap.capacityEM + 0.0001) return i;
+    }
+    return -1;
+  }, [activeInitiatives, cap.capacityEM, cap.hasConfiguredQuarter]);
+
+  const copyMarkdown = useCallback(async () => {
+    const md = exportPlanMarkdown(state, cap, activeInitiatives, descopedInitiatives);
+    try {
+      await navigator.clipboard.writeText(md);
+      setCopiedMd(true);
+      setTimeout(() => setCopiedMd(false), 1800);
+    } catch {
+      // Fallback: open prompt with text selected
+      window.prompt('Copy plan markdown:', md);
+    }
+  }, [state, cap, activeInitiatives, descopedInitiatives]);
   useEffect(() => {
     try { localStorage.setItem(TRANSPOSED_KEY, transposed ? '1' : '0'); } catch {}
     // re-trigger auto-scroll on layout swap
@@ -842,22 +999,6 @@ function PlanView({
   const onResizeStart = (e: React.MouseEvent) => {
     if (panel.collapsed) return;
     e.preventDefault();
-    if (transposed) {
-      const startX = e.clientX;
-      const startW = panel.height; // reuse field as width when transposed
-      const onMove = (ev: MouseEvent) => {
-        const dx = startX - ev.clientX;
-        const next = Math.max(280, Math.min(window.innerWidth - 280, startW + dx));
-        setPanel(p => ({ ...p, height: next }));
-      };
-      const onUp = () => {
-        window.removeEventListener('mousemove', onMove);
-        window.removeEventListener('mouseup', onUp);
-      };
-      window.addEventListener('mousemove', onMove);
-      window.addEventListener('mouseup', onUp);
-      return;
-    }
     const startY = e.clientY;
     const startH = panel.height;
     const onMove = (ev: MouseEvent) => {
@@ -897,6 +1038,11 @@ function PlanView({
           onFocus={onTextFocus}
           onBlur={onTextBlur}
         />
+        {copiedMd && (
+          <span className="anim-pop-in inline-flex h-6 items-center rounded-full bg-emerald-100 px-2 text-[11px] font-medium text-emerald-700">
+            Copied!
+          </span>
+        )}
         {hasPassword && (
           <button
             type="button"
@@ -912,32 +1058,42 @@ function PlanView({
           </button>
         )}
         <Presence conn={conn} peers={peers} />
-        <ToolbarButton onClick={addIteration} title="Add a new iteration after the last one">+ Iteration</ToolbarButton>
-        <ToolbarButton onClick={() => addPerson()} title="Add a new person">+ Person</ToolbarButton>
         <div className="mx-1 h-5 w-px bg-ink-200" aria-hidden />
         <IconToolbarButton disabled={undoLen === 0} onClick={undo} title="Undo (⌘Z)" label="Undo">↩</IconToolbarButton>
         <IconToolbarButton disabled={redoLen === 0} onClick={redo} title="Redo (⇧⌘Z)" label="Redo">↪</IconToolbarButton>
         <OverflowMenu
           items={[
-            { label: '← Add past iteration', onClick: addPastIteration, title: 'Add an iteration before the first one' },
-            { label: transposed ? '⇆ People as rows' : '⇆ Weeks as rows', onClick: () => setTransposed(t => !t), title: transposed ? 'Switch back to people-as-rows view' : 'Swap rows and columns (weeks as rows)' },
-            { label: darkMode ? '☀ Light mode' : '☾ Dark mode', onClick: () => setDarkMode(d => !d), title: darkMode ? 'Switch to light mode' : 'Switch to dark mode' },
-            { divider: true },
+            { sectionLabel: 'Add' },
+            { label: 'Iteration', icon: <IconPlus />, onClick: addIteration, title: 'Add a new iteration after the last one' },
+            { label: 'Person', icon: <IconUserPlus />, onClick: () => addPerson(), title: 'Add a new person' },
+            { label: 'Past iteration', icon: <IconArrowLeft />, onClick: addPastIteration, title: 'Add an iteration before the first one' },
+            { sectionLabel: 'Plan' },
+            {
+              label: cap.hasConfiguredQuarter ? 'Quarter setup' : 'Set up quarter',
+              icon: cap.hasConfiguredQuarter ? <IconGear /> : <span className="text-amber-500"><IconAlert /></span>,
+              onClick: () => setQuarterModalOpen(true),
+              title: cap.hasConfiguredQuarter ? 'Edit team size, weeks, buffers' : 'Set up your quarter to enable capacity tracking',
+            },
+            { label: 'Copy markdown', icon: <IconClipboard />, onClick: copyMarkdown, title: 'Copy a markdown summary of the plan to share with stakeholders' },
+            { sectionLabel: 'View' },
+            { label: transposed ? 'People as rows' : 'Weeks as rows', icon: <IconSwap />, onClick: () => setTransposed(t => !t), title: transposed ? 'Switch back to people-as-rows view' : 'Swap rows and columns (weeks as rows)' },
+            { label: darkMode ? 'Light mode' : 'Dark mode', icon: darkMode ? <IconSun /> : <IconMoon />, onClick: () => setDarkMode(d => !d), title: darkMode ? 'Switch to light mode' : 'Switch to dark mode' },
+            { sectionLabel: 'Sharing' },
             hasPassword
-              ? { label: '🔒 Change password', onClick: () => setPasswordDialog('change'), title: 'Change the password required to view this plan' }
-              : { label: '🔒 Set password', onClick: () => setPasswordDialog('set'), title: 'Require a password to view this plan' },
+              ? { label: 'Change password', icon: <IconLock />, onClick: () => setPasswordDialog('change'), title: 'Change the password required to view this plan' }
+              : { label: 'Set password', icon: <IconLock />, onClick: () => setPasswordDialog('set'), title: 'Require a password to view this plan' },
             ...(hasPassword
-              ? [{ label: '🔓 Remove password', onClick: () => setPasswordDialog('remove'), title: 'Remove the password from this plan' } as OverflowItem]
+              ? [{ label: 'Remove password', icon: <IconUnlock />, onClick: () => setPasswordDialog('remove'), title: 'Remove the password from this plan' } as OverflowItem]
               : []),
             { divider: true },
-            { label: 'Clear chart', onClick: clearAssignments, danger: true, title: 'Remove all assignments' },
+            { label: 'Clear chart', icon: <IconTrash />, onClick: clearAssignments, danger: true, title: 'Remove all assignments' },
           ]}
         />
       </div>
 
-      <div className={'flex min-h-0 flex-1 ' + (transposed ? 'flex-row' : 'flex-col')}>
+      <div className="flex min-h-0 flex-1 flex-col">
         {/* Chart pane */}
-        <div ref={chartScrollRef} className={'min-h-0 min-w-0 flex-1 overflow-auto ' + (transposed ? 'm-4 mr-2' : 'm-4 mb-6')}>
+        <div ref={chartScrollRef} className="m-4 mb-6 min-h-0 min-w-0 flex-1 overflow-auto">
           {transposed ? (
             <ChartTransposed
               state={state}
@@ -994,32 +1150,18 @@ function PlanView({
         {/* Resize grabber (only when expanded) */}
         {!panel.collapsed && (
           <div
-            className={
-              transposed
-                ? 'group relative w-2 cursor-col-resize border-x border-ink-200 bg-ink-50/60'
-                : 'group relative h-2 cursor-row-resize border-y border-ink-200 bg-ink-50/60'
-            }
+            className="group relative h-2 cursor-row-resize border-y border-ink-200 bg-ink-50/60"
             onMouseDown={onResizeStart}
             title="Drag to resize"
           >
-            <div
-              className={
-                transposed
-                  ? 'pointer-events-none absolute left-1/2 top-1/2 h-9 w-[3px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-ink-300 opacity-60 transition group-hover:bg-ink-400 group-hover:opacity-100'
-                  : 'pointer-events-none absolute left-1/2 top-1/2 h-[3px] w-9 -translate-x-1/2 -translate-y-1/2 rounded-full bg-ink-300 opacity-60 transition group-hover:bg-ink-400 group-hover:opacity-100'
-              }
-            />
+            <div className="pointer-events-none absolute left-1/2 top-1/2 h-[3px] w-9 -translate-x-1/2 -translate-y-1/2 rounded-full bg-ink-300 opacity-60 transition group-hover:bg-ink-400 group-hover:opacity-100" />
           </div>
         )}
 
         {/* Projects panel */}
         <div
-          className={
-            transposed
-              ? 'flex flex-col overflow-hidden border-l border-ink-200 bg-white shadow-[-2px_0_24px_rgba(15,23,42,0.04)] transition-[width] duration-200 ease-out'
-              : 'flex flex-col overflow-hidden border-t border-ink-200 bg-white shadow-[0_-2px_24px_rgba(15,23,42,0.04)] transition-[height] duration-200 ease-out'
-          }
-          style={transposed ? { width: panel.collapsed ? 48 : panel.height } : { height: panel.collapsed ? 48 : panel.height }}
+          className="flex flex-col overflow-hidden border-t border-ink-200 bg-white shadow-[0_-2px_24px_rgba(15,23,42,0.04)] transition-[height] duration-200 ease-out"
+          style={{ height: panel.collapsed ? 48 : panel.height }}
         >
           <div className="flex shrink-0 flex-nowrap items-center gap-3 overflow-hidden border-b border-ink-200 bg-gradient-to-b from-ink-50/60 to-white px-5 py-2.5">
             <button
@@ -1034,52 +1176,117 @@ function PlanView({
               Projects
             </h2>
             <span className="rounded-full bg-ink-100 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-ink-600">
-              {state.projects.length}
+              {activeInitiatives.length}
             </span>
-            {!panel.collapsed && !transposed && (
-              <span className="hidden text-[12px] text-ink-500 md:inline">
+            {descopedInitiatives.length > 0 && (
+              <span
+                className="rounded-full bg-ink-100 px-2 py-0.5 text-[11px] font-medium text-ink-500"
+                title={`${descopedInitiatives.length} descoped`}
+              >
+                +{descopedInitiatives.length} descoped
+              </span>
+            )}
+            {!panel.collapsed && unrankedCount > 0 && (
+              <span
+                className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-800"
+                title="Some projects don't have a priority — they sort last"
+              >
+                {unrankedCount} unranked
+              </span>
+            )}
+            {!panel.collapsed && (
+              <span className="hidden text-[12px] text-ink-500 lg:inline">
                 Drag the colored chip onto a cell, or click any cell to pick.
               </span>
             )}
             <span className="flex-1" />
-            <button
-              className="inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-md bg-brand-600 px-3 text-[12px] font-semibold text-[#fff] shadow-sm transition hover:bg-brand-700 active:scale-[0.98]"
-              onClick={() => {
-                if (panel.collapsed) setPanel(p => ({ ...p, collapsed: false }));
-                const id = addProject();
-                setIsAddingProject(true);
-                setEditingProjectId(id);
-              }}
-            >
-              <span className="text-[14px] leading-none">+</span> Add project
-            </button>
+            {!panel.collapsed && (
+              <>
+                <label className="inline-flex cursor-pointer select-none items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-ink-600 hover:bg-ink-100">
+                  <input
+                    type="checkbox"
+                    checked={showWhatFits}
+                    onChange={e => setShowWhatFits(e.target.checked)}
+                    className="h-3.5 w-3.5"
+                  />
+                  Show what fits
+                </label>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const id = addProject();
+                    setIsAddingProject(true);
+                    setEditingProjectId(id);
+                  }}
+                  className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md bg-brand-600 px-3 text-[12px] font-semibold text-white shadow-sm transition hover:bg-brand-700 active:scale-[0.98]"
+                >
+                  <span className="text-[14px] leading-none">+</span> Add project
+                </button>
+              </>
+            )}
           </div>
           {!panel.collapsed && (
-            <div className="flex-1 overflow-auto">
-              <ProjectsTable
-                projects={state.projects}
-                people={state.people}
-                peopleById={peopleById}
+            <div className="shrink-0 border-b border-ink-100 px-5 py-2.5">
+              <CapacityBars
+                info={cap}
+                initiatives={activeInitiatives}
                 plannedByProject={plannedByProject}
-                updateProject={updateProject}
-                removeProject={removeProject}
-                compact={transposed}
-                editingId={editingProjectId}
-                onStartEdit={id => setEditingProjectId(id)}
-                onStopEdit={() => setEditingProjectId(null)}
-                highlightedProjectId={highlightedProjectId}
-                onToggleHighlight={id => setHighlightedProjectId(prev => prev === id ? null : id)}
+                onConfigureQuarter={() => setQuarterModalOpen(true)}
               />
+            </div>
+          )}
+          {!panel.collapsed && (
+            <div className="flex-1 overflow-auto">
+              <PrioritizationTable
+                initiatives={activeInitiatives}
+                capacityEM={cap.capacityEM}
+                demandEM={cap.demandEM}
+                fitMarkerIndex={fitMarkerIndex}
+                showWhatFits={showWhatFits}
+                addInitiative={() => {
+                  if (panel.collapsed) setPanel(p => ({ ...p, collapsed: false }));
+                  const id = addProject();
+                  setIsAddingProject(true);
+                  setEditingProjectId(id);
+                }}
+                updateProject={updateProject}
+                descopeInitiative={descopeProject}
+                removeInitiative={removeProject}
+                reorderInitiative={reorderProjectPriority}
+                weeksPerEM={cap.quarter.weeksPerEM}
+                plannedByProject={plannedByProject}
+                onEdit={id => { setIsAddingProject(false); setEditingProjectId(id); }}
+              />
+              {descopedInitiatives.length > 0 && (
+                <DescopedDrawer
+                  descoped={descopedInitiatives}
+                  restoreInitiative={restoreProject}
+                  removeInitiative={removeProject}
+                />
+              )}
             </div>
           )}
         </div>
       </div>
     </div>
+    {quarterModalOpen && (
+      <QuarterModal
+        open={quarterModalOpen}
+        onClose={() => setQuarterModalOpen(false)}
+        info={cap}
+        updateQuarter={updateQuarter}
+        addBuffer={addBuffer}
+        updateBuffer={updateBuffer}
+        removeBuffer={removeBuffer}
+        installDefaultBuffers={installDefaultBuffers}
+      />
+    )}
     {editingProject && (
       <ProjectEditModal
         project={editingProject}
         people={state.people}
         planned={plannedByProject[editingProject.id] ?? 0}
+        weeksPerEM={state.quarter?.weeksPerEM ?? 4}
         onUpdate={patch => updateProject(editingProject.id, patch)}
         onRemove={() => removeProject(editingProject.id)}
         onClose={() => { setEditingProjectId(null); setIsAddingProject(false); }}
@@ -1142,27 +1349,6 @@ function Chevron({ open }: { open: boolean }) {
   );
 }
 
-function ToolbarButton(props: {
-  children: React.ReactNode;
-  onClick?: () => void;
-  subtle?: boolean;
-  title?: string;
-  disabled?: boolean;
-}) {
-  const base =
-    'inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[12px] font-medium transition active:scale-[0.98]';
-  const styled = props.disabled
-    ? 'text-ink-300 cursor-not-allowed'
-    : props.subtle
-    ? 'text-ink-500 hover:bg-ink-100 hover:text-ink-900'
-    : 'border border-ink-200 bg-white text-ink-800 shadow-sm hover:border-ink-300 hover:bg-ink-50';
-  return (
-    <button className={base + ' ' + styled} onClick={props.disabled ? undefined : props.onClick} title={props.title} disabled={props.disabled}>
-      {props.children}
-    </button>
-  );
-}
-
 function IconToolbarButton(props: {
   children: React.ReactNode;
   onClick?: () => void;
@@ -1190,8 +1376,61 @@ function IconToolbarButton(props: {
 }
 
 type OverflowItem =
-  | { divider: true; label?: undefined; onClick?: undefined; title?: undefined; danger?: undefined }
-  | { divider?: false; label: string; onClick: () => void; title?: string; danger?: boolean };
+  | { divider: true; label?: undefined; onClick?: undefined; title?: undefined; danger?: undefined; icon?: undefined; sectionLabel?: undefined }
+  | { divider?: false; sectionLabel?: undefined; label: string; onClick: () => void; title?: string; danger?: boolean; icon?: React.ReactNode }
+  | { sectionLabel: string; divider?: undefined; label?: undefined; onClick?: undefined; title?: undefined; danger?: undefined; icon?: undefined };
+
+/* Compact 14×14 line icons used in the overflow menu. */
+const iconSvg = (path: React.ReactNode) => (
+  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    {path}
+  </svg>
+);
+const IconPlus = () => iconSvg(<><path d="M8 3v10" /><path d="M3 8h10" /></>);
+const IconArrowLeft = () => iconSvg(<><path d="M12.5 8H3.5" /><path d="M7 4l-3.5 4L7 12" /></>);
+const IconUserPlus = () => iconSvg(<>
+  <circle cx="6.5" cy="5.5" r="2.25" />
+  <path d="M2.5 13.5c0-2.21 1.79-4 4-4s4 1.79 4 4" />
+  <path d="M12.5 4v4" />
+  <path d="M10.5 6h4" />
+</>);
+const IconGear = () => iconSvg(<>
+  <circle cx="8" cy="8" r="2.25" />
+  <path d="M8 1.5v1.7M8 12.8v1.7M14.5 8h-1.7M3.2 8H1.5M12.6 3.4l-1.2 1.2M4.6 11.4l-1.2 1.2M12.6 12.6l-1.2-1.2M4.6 4.6L3.4 3.4" />
+</>);
+const IconAlert = () => iconSvg(<>
+  <path d="M8 2.5L14.5 13.5h-13L8 2.5z" />
+  <path d="M8 6.5v3" />
+  <path d="M8 11.5v.5" />
+</>);
+const IconClipboard = () => iconSvg(<>
+  <rect x="4" y="3" width="8" height="11" rx="1.25" />
+  <rect x="6" y="1.5" width="4" height="2.5" rx="0.75" fill="currentColor" stroke="none" />
+</>);
+const IconSwap = () => iconSvg(<>
+  <path d="M3 5h9" />
+  <path d="M9.5 2.5L12 5L9.5 7.5" />
+  <path d="M13 11H4" />
+  <path d="M6.5 8.5L4 11l2.5 2.5" />
+</>);
+const IconSun = () => iconSvg(<>
+  <circle cx="8" cy="8" r="2.75" />
+  <path d="M8 1.5v1.5M8 13v1.5M1.5 8h1.5M13 8h1.5M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M3.4 12.6l1.1-1.1M11.5 4.5l1.1-1.1" />
+</>);
+const IconMoon = () => iconSvg(<path d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7z" fill="currentColor" stroke="none" />);
+const IconLock = () => iconSvg(<>
+  <rect x="3.5" y="7" width="9" height="6.5" rx="1.25" />
+  <path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2" />
+</>);
+const IconUnlock = () => iconSvg(<>
+  <rect x="3.5" y="7" width="9" height="6.5" rx="1.25" />
+  <path d="M5.5 7V5a2.5 2.5 0 0 1 4.9-0.6" />
+</>);
+const IconTrash = () => iconSvg(<>
+  <path d="M2.5 4.5h11" />
+  <path d="M5 4.5V3a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v1.5" />
+  <path d="M3.75 4.5l.75 9a1 1 0 0 0 1 .9h5a1 1 0 0 0 1-.9l.75-9" />
+</>);
 
 function OverflowMenu(props: { items: OverflowItem[] }) {
   const [open, setOpen] = useState(false);
@@ -1229,10 +1468,17 @@ function OverflowMenu(props: { items: OverflowItem[] }) {
       {open && (
         <div
           ref={popRef}
-          className="anim-pop-in absolute right-0 top-9 z-50 w-56 overflow-hidden rounded-xl border border-ink-200 bg-white py-1 shadow-xl shadow-ink-900/10"
+          className="anim-pop-in absolute right-0 top-9 z-50 w-60 overflow-hidden rounded-xl border border-ink-200 bg-white py-1.5 shadow-xl shadow-ink-900/10"
         >
           {props.items.map((item, i) => {
             if (item.divider) return <div key={i} className="my-1 border-t border-ink-100" />;
+            if (item.sectionLabel) {
+              return (
+                <div key={i} className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-400">
+                  {item.sectionLabel}
+                </div>
+              );
+            }
             return (
               <button
                 key={i}
@@ -1240,13 +1486,16 @@ function OverflowMenu(props: { items: OverflowItem[] }) {
                 title={item.title}
                 onClick={() => { setOpen(false); item.onClick?.(); }}
                 className={
-                  'block w-full px-3 py-1.5 text-left text-[12.5px] transition ' +
+                  'flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-[13px] transition ' +
                   (item.danger
                     ? 'text-rose-600 hover:bg-rose-50'
                     : 'text-ink-700 hover:bg-ink-100 hover:text-ink-900')
                 }
               >
-                {item.label}
+                <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center text-ink-500" aria-hidden>
+                  {item.icon}
+                </span>
+                <span className="flex-1 truncate">{item.label}</span>
               </button>
             );
           })}
@@ -1945,7 +2194,7 @@ function Chart(props: {
       {picker && (
         <ProjectPicker
           rect={picker.rect}
-          projects={state.projects}
+          projects={state.projects.filter(p => !p.descoped)}
           onPick={pid => {
             props.addAssignment(picker.personId, picker.weekId, pid);
             setPicker(null);
@@ -2433,7 +2682,7 @@ function ChartTransposed(props: {
   };
 
   // Sticky column widths
-  const ITER_W = 96;
+  const ITER_W = 140;
   const WEEK_W = 96;
 
   return (
@@ -2606,7 +2855,7 @@ function ChartTransposed(props: {
                     onChange={g => props.setIterationGoal(iter.id, g)}
                     onTextFocus={props.onTextFocus}
                     onTextBlur={props.onTextBlur}
-                    className="max-w-[140px]"
+                    className="max-w-[124px]"
                   />
                 )}
               </div>
@@ -2806,7 +3055,7 @@ function ChartTransposed(props: {
       {picker && (
         <ProjectPicker
           rect={picker.rect}
-          projects={state.projects}
+          projects={state.projects.filter(p => !p.descoped)}
           onPick={pid => {
             props.addAssignment(picker.personId, picker.weekId, pid);
             setPicker(null);
@@ -3087,6 +3336,7 @@ function ProjectsTable(props: {
   people: Person[];
   peopleById: Record<ID, Person>;
   plannedByProject: Record<ID, number>;
+  weeksPerEM: number;
   updateProject: (id: ID, p: Partial<Project>) => void;
   removeProject: (id: ID) => void;
   compact?: boolean;
@@ -3121,8 +3371,8 @@ function ProjectsTable(props: {
         av = a.name.toLowerCase();
         bv = b.name.toLowerCase();
       } else if (sortKey === 'estimated') {
-        av = a.estimatedWeeks ?? -Infinity;
-        bv = b.estimatedWeeks ?? -Infinity;
+        av = a.estimateEM ?? -Infinity;
+        bv = b.estimateEM ?? -Infinity;
       } else {
         av = props.plannedByProject[a.id] ?? 0;
         bv = props.plannedByProject[b.id] ?? 0;
@@ -3135,14 +3385,15 @@ function ProjectsTable(props: {
   }, [filteredProjects, props.plannedByProject, sortKey, sortDir]);
 
   const totals = useMemo(() => {
-    let planned = 0;
-    let estimated = 0;
+    let plannedWeeks = 0;
+    let estimatedEM = 0;
     for (const p of props.projects) {
-      planned += props.plannedByProject[p.id] ?? 0;
-      if (typeof p.estimatedWeeks === 'number') estimated += p.estimatedWeeks;
+      plannedWeeks += props.plannedByProject[p.id] ?? 0;
+      if (typeof p.estimateEM === 'number') estimatedEM += p.estimateEM;
     }
-    return { planned, estimated };
-  }, [props.projects, props.plannedByProject]);
+    const plannedEM = props.weeksPerEM > 0 ? plannedWeeks / props.weeksPerEM : 0;
+    return { plannedEM, estimatedEM };
+  }, [props.projects, props.plannedByProject, props.weeksPerEM]);
 
   const toggleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -3206,12 +3457,12 @@ function ProjectsTable(props: {
         </div>
         <span className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-ink-500">Sort:</span>
         {sortBtn('Project', 'name')}
-        {sortBtn('Est.', 'estimated', totals.estimated > 0 && (
-          <span className="ml-0.5 normal-case tracking-normal text-ink-400">· {totals.estimated} wk</span>
+        {sortBtn('Est.', 'estimated', totals.estimatedEM > 0 && (
+          <span className="ml-0.5 normal-case tracking-normal text-ink-400">· {fmtWk(totals.estimatedEM)} EM</span>
         ))}
         {sortBtn('Planned', 'planned', (
           <span className="ml-0.5 normal-case tracking-normal text-ink-400">
-            · {fmtWk(totals.planned)}{totals.estimated > 0 ? ` / ${totals.estimated}` : ''} wk
+            · {fmtWk(totals.plannedEM)}{totals.estimatedEM > 0 ? ` / ${fmtWk(totals.estimatedEM)}` : ''} EM
           </span>
         ))}
       </div>
@@ -3247,6 +3498,7 @@ function ProjectsTable(props: {
             people={props.people}
             peopleById={props.peopleById}
             planned={props.plannedByProject[p.id] ?? 0}
+            weeksPerEM={props.weeksPerEM}
             onStartEdit={() => props.onStartEdit(p.id)}
             onUpdate={patch => props.updateProject(p.id, patch)}
             onRemove={() => {
@@ -3270,6 +3522,7 @@ function ProjectRow(props: {
   people: Person[];
   peopleById: Record<ID, Person>;
   planned: number;
+  weeksPerEM: number;
   onStartEdit: () => void;
   onUpdate: (patch: Partial<Project>) => void;
   onRemove: () => void;
@@ -3277,7 +3530,7 @@ function ProjectRow(props: {
   isHighlighted: boolean;
   onToggleHighlight: () => void;
 }) {
-  const { project, planned } = props;
+  const { project, planned, weeksPerEM } = props;
   const [colorOpen, setColorOpen] = useState(false);
   const swatchRef = useRef<HTMLSpanElement>(null);
   const [colorRect, setColorRect] = useState<DOMRect | null>(null);
@@ -3287,15 +3540,16 @@ function ProjectRow(props: {
     e.dataTransfer.effectAllowed = 'copy';
   };
 
-  const est = project.estimatedWeeks;
+  const est = project.estimateEM;
+  const plannedEM = weeksPerEM > 0 ? planned / weeksPerEM : 0;
   let badgeClass = 'bg-ink-100 text-ink-500 border-ink-200';
-  let badgeText = fmtWk(planned);
+  let badgeText = fmtWk(plannedEM);
   if (est != null && est > 0) {
-    badgeText = `${fmtWk(planned)} / ${est}`;
-    if (planned > est + 0.01) badgeClass = 'bg-rose-50 text-rose-700 border-rose-200 font-semibold';
-    else if (Math.abs(planned - est) <= 0.01) badgeClass = 'bg-emerald-50 text-emerald-700 border-emerald-200 font-semibold';
+    badgeText = `${fmtWk(plannedEM)} / ${fmtWk(est)}`;
+    if (plannedEM > est + 0.01) badgeClass = 'bg-rose-50 text-rose-700 border-rose-200 font-semibold';
+    else if (Math.abs(plannedEM - est) <= 0.01) badgeClass = 'bg-emerald-50 text-emerald-700 border-emerald-200 font-semibold';
     else badgeClass = 'bg-ink-100 text-ink-700 border-ink-200';
-  } else if (planned === 0) {
+  } else if (plannedEM === 0) {
     badgeClass = 'bg-transparent text-ink-400 border-transparent';
   }
 
@@ -3333,9 +3587,9 @@ function ProjectRow(props: {
   const plannedBadge = (
     <span
       className={'inline-flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-[3px] text-[12px] tabular-nums ' + badgeClass}
-      title={est != null && est > 0 ? `${fmtWk(planned)} planned / ${est} estimated eng-weeks` : 'Planned eng-weeks across all assignments'}
+      title={est != null && est > 0 ? `${fmtWk(plannedEM)} planned / ${fmtWk(est)} estimated EM` : 'Planned EM across all assignments'}
     >
-      {badgeText} <span className="text-[10.5px] opacity-70">wk</span>
+      {badgeText} <span className="text-[10.5px] opacity-70">EM</span>
     </span>
   );
 
@@ -3422,243 +3676,6 @@ function ProjectRow(props: {
           {deleteBtn}
         </div>
       )}
-    </div>
-  );
-}
-
-function ProjectEditModal(props: {
-  project: Project;
-  people: Person[];
-  planned: number;
-  onUpdate: (patch: Partial<Project>) => void;
-  onRemove: () => void;
-  onClose: () => void;
-  isNew?: boolean;
-}) {
-  const { project, planned } = props;
-  const swatchRef = useRef<HTMLButtonElement>(null);
-  const [colorOpen, setColorOpen] = useState(false);
-  const [colorRect, setColorRect] = useState<DOMRect | null>(null);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') props.onClose(); };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [props]);
-
-  const ink = inkFor(project.color);
-  const est = project.estimatedWeeks;
-  let badgeClass = 'bg-ink-100 text-ink-500 border-ink-200';
-  let badgeText = fmtWk(planned);
-  if (est != null && est > 0) {
-    badgeText = `${fmtWk(planned)} / ${est}`;
-    if (planned > est + 0.01) badgeClass = 'bg-rose-50 text-rose-700 border-rose-200 font-semibold';
-    else if (Math.abs(planned - est) <= 0.01) badgeClass = 'bg-emerald-50 text-emerald-700 border-emerald-200 font-semibold';
-    else badgeClass = 'bg-ink-100 text-ink-700 border-ink-200';
-  } else if (planned === 0) {
-    badgeClass = 'bg-transparent text-ink-400 border-transparent';
-  }
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink-900/40 px-4 py-12 backdrop-blur-sm"
-      onMouseDown={e => { if (e.target === e.currentTarget) props.onClose(); }}
-    >
-      <div className="anim-pop-in w-full max-w-lg rounded-2xl border border-ink-200 bg-white shadow-2xl">
-        <div className="flex items-center justify-between gap-3 border-b border-ink-100 px-5 py-3.5">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-500">Project</span>
-          <button
-            type="button"
-            onClick={props.onClose}
-            title="Close"
-            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-ink-500 hover:bg-ink-100 hover:text-ink-800"
-          >
-            ×
-          </button>
-        </div>
-        <div className="flex flex-col gap-4 px-5 py-5">
-          <div className="flex items-end gap-3">
-            <div className="flex flex-col gap-1">
-              <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-500">Color</span>
-              <button
-                ref={swatchRef}
-                type="button"
-                onClick={() => {
-                  if (swatchRef.current) setColorRect(swatchRef.current.getBoundingClientRect());
-                  setColorOpen(true);
-                }}
-                title="Click to change color"
-                className="inline-flex h-9 w-12 items-center justify-center rounded-full border shadow-[inset_0_1px_0_rgba(255,255,255,0.6),0_1px_2px_rgba(15,23,42,0.06)] transition hover:-translate-y-px hover:shadow-md"
-                style={{ background: project.color, color: ink, borderColor: 'rgba(15,23,42,0.08)' }}
-              >
-                <span className="text-[10px] tracking-tighter opacity-50">⋮⋮</span>
-              </button>
-              {colorOpen && colorRect && (
-                <ColorPopover
-                  rect={colorRect}
-                  value={project.color}
-                  onPick={c => { props.onUpdate({ color: c }); setColorOpen(false); }}
-                  onClose={() => setColorOpen(false)}
-                />
-              )}
-            </div>
-            <label className="flex min-w-0 flex-1 flex-col gap-1">
-              <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-500">Name</span>
-              <input
-                autoFocus
-                className="h-9 w-full rounded-md border border-ink-200 bg-white px-3 text-[14px] font-semibold text-ink-900 outline-none transition focus:border-brand-400 focus:ring-2 focus:ring-brand-200"
-                value={project.name}
-                onChange={e => props.onUpdate({ name: e.target.value })}
-                placeholder="Untitled project"
-                onKeyDown={e => { if (e.key === 'Enter') props.onClose(); }}
-              />
-            </label>
-          </div>
-          <div className="grid grid-cols-[minmax(0,1fr)_110px_auto] items-end gap-3">
-            <label className="flex min-w-0 flex-col gap-1">
-              <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-500">DRI</span>
-              <select
-                className="h-9 rounded-md border border-ink-200 bg-white px-2 text-[13px] outline-none transition hover:border-ink-300 focus:border-brand-400 focus:ring-2 focus:ring-brand-200"
-                value={project.driId ?? ''}
-                onChange={e => props.onUpdate({ driId: e.target.value || null })}
-              >
-                <option value="">— None —</option>
-                {props.people.map(p => (
-                  <option key={p.id} value={p.id}>{p.name}</option>
-                ))}
-              </select>
-            </label>
-            <label className="flex flex-col gap-1">
-              <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-500">Estimated wk</span>
-              <input
-                type="number"
-                min={0}
-                step={1}
-                placeholder="—"
-                value={project.estimatedWeeks ?? ''}
-                onChange={e => {
-                  const v = e.target.value;
-                  props.onUpdate({ estimatedWeeks: v === '' ? undefined : Math.max(0, Number(v)) });
-                }}
-                className="h-9 rounded-md border border-ink-200 bg-white px-2 text-right text-[13px] tabular-nums outline-none transition hover:border-ink-300 focus:border-brand-400 focus:ring-2 focus:ring-brand-200"
-              />
-            </label>
-            <div className="flex flex-col gap-1">
-              <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-500">Planned</span>
-              <div className="flex h-9 items-center">
-                <span
-                  className={'inline-flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-[3px] text-[12px] tabular-nums ' + badgeClass}
-                  title={est != null && est > 0 ? `${fmtWk(planned)} planned / ${est} estimated eng-weeks` : 'Planned eng-weeks across all assignments'}
-                >
-                  {badgeText} <span className="text-[10.5px] opacity-70">wk</span>
-                </span>
-              </div>
-            </div>
-          </div>
-          <label className="flex flex-col gap-1">
-            <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-500">URL (e.g. tracking issue)</span>
-            <div className="flex items-center gap-1.5">
-              <input
-                type="url"
-                placeholder="https://github.com/.../issues/123"
-                value={project.url ?? ''}
-                onChange={e => props.onUpdate({ url: e.target.value || undefined })}
-                className="h-9 min-w-0 flex-1 rounded-md border border-ink-200 bg-white px-3 text-[13px] outline-none transition hover:border-ink-300 focus:border-brand-400 focus:ring-2 focus:ring-brand-200"
-                onKeyDown={e => { if (e.key === 'Enter') props.onClose(); }}
-              />
-              {project.url && (
-                <a
-                  href={project.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  title={`Open ${project.url}`}
-                  className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-ink-200 bg-white text-ink-500 transition hover:bg-brand-50 hover:text-brand-600"
-                >
-                  ↗
-                </a>
-              )}
-            </div>
-          </label>
-        </div>
-        <div className="flex items-center justify-between gap-2 border-t border-ink-100 bg-ink-50/40 px-5 py-3">
-          {!props.isNew ? (
-            <button
-              type="button"
-              onClick={() => {
-                if (confirm(`Delete project "${project.name}"?`)) {
-                  props.onRemove();
-                  props.onClose();
-                }
-              }}
-              className="inline-flex h-8 items-center gap-1 rounded-md border border-rose-200 bg-white px-3 text-[12.5px] text-rose-600 transition hover:bg-rose-50"
-            >
-              Delete project
-            </button>
-          ) : (
-            <span />
-          )}
-          <button
-            type="button"
-            onClick={props.onClose}
-            className="inline-flex h-8 items-center gap-1 rounded-md bg-brand-600 px-4 text-[12.5px] font-semibold text-[#fff] shadow-sm transition hover:bg-brand-700 active:scale-[0.98]"
-          >
-            Done
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ============================================================ */
-/* Popovers                                                      */
-/* ============================================================ */
-
-function ColorPopover(props: {
-  rect: DOMRect;
-  value: string;
-  onPick: (c: string) => void;
-  onClose: () => void;
-}) {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const onDoc = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) props.onClose();
-    };
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') props.onClose(); };
-    document.addEventListener('mousedown', onDoc);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onDoc);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [props]);
-
-  const w = 200;
-  let top = props.rect.bottom + 6;
-  let left = props.rect.left;
-  if (top + 100 > window.innerHeight) top = props.rect.top - 100 - 6;
-  if (left + w > window.innerWidth) left = window.innerWidth - w - 8;
-
-  return (
-    <div
-      ref={ref}
-      className="anim-pop-in fixed z-50 rounded-xl border border-ink-200 bg-white p-3 shadow-2xl"
-      style={{ top, left, width: w }}
-    >
-      <div className="grid grid-cols-5 gap-2">
-        {COLORS.map(c => (
-          <button
-            key={c}
-            onClick={() => props.onPick(c)}
-            className={
-              'h-7 w-7 rounded-full border-2 transition hover:scale-110 ' +
-              (c === props.value ? 'border-ink-900 ring-2 ring-white ring-offset-1 ring-offset-ink-200' : 'border-transparent')
-            }
-            style={{ background: c, boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.6), 0 1px 2px rgba(15,23,42,0.08)' }}
-          />
-        ))}
-      </div>
     </div>
   );
 }
