@@ -94,7 +94,7 @@ export function Home() {
         </header>
 
         <section className="rounded-2xl border border-ink-200 bg-white p-6 shadow-[0_1px_2px_rgba(15,23,42,0.04),0_8px_24px_-12px_rgba(15,23,42,0.08)]">
-          <label className="mb-2 block text-[12px] font-semibold uppercase tracking-[0.06em] text-ink-500">
+          <label htmlFor="new-plan-name" className="mb-2 block text-[12px] font-semibold uppercase tracking-[0.06em] text-ink-500">
             Create a new plan
           </label>
           <form
@@ -102,6 +102,7 @@ export function Home() {
             className="flex flex-col gap-3 sm:flex-row sm:items-center"
           >
             <input
+              id="new-plan-name"
               autoFocus
               placeholder="e.g. Q4 Big Orca Plan"
               value={name}
