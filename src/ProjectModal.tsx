@@ -213,13 +213,14 @@ export function ProjectEditModal(props: {
       className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink-900/40 px-4 py-12 backdrop-blur-sm"
       onMouseDown={e => { if (e.target === e.currentTarget) props.onClose(); }}
     >
-      <div className="anim-pop-in w-full max-w-lg rounded-2xl border border-ink-200 bg-white shadow-2xl">
+      <div className="anim-pop-in w-full max-w-lg rounded-2xl border border-ink-200 bg-white shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="project-modal-title">
         <div className="flex items-center justify-between gap-3 border-b border-ink-100 px-5 py-3.5">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-500">Project</span>
+          <span id="project-modal-title" className="text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-500">Project</span>
           <button
             type="button"
             onClick={props.onClose}
             title="Close"
+            aria-label="Close"
             className="inline-flex h-7 w-7 items-center justify-center rounded-md text-ink-500 hover:bg-ink-100 hover:text-ink-800"
           >
             ×
