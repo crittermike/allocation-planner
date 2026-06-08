@@ -18,6 +18,16 @@ const INK_BY_BG: Record<string, string> = {
 };
 const inkFor = (bg: string) => INK_BY_BG[bg.toLowerCase()] ?? '#1e293b';
 
+/** Human-readable names for the palette, used as accessible labels for the
+ *  color swatch buttons (which otherwise convey color only visually). */
+const NAME_BY_BG: Record<string, string> = {
+  '#fecaca': 'Red', '#fed7aa': 'Orange', '#fef3c7': 'Amber',
+  '#d9f99d': 'Lime', '#bbf7d0': 'Green', '#a5f3fc': 'Cyan',
+  '#bfdbfe': 'Blue', '#ddd6fe': 'Violet', '#fbcfe8': 'Pink',
+  '#e2e8f0': 'Gray',
+};
+const nameFor = (bg: string) => NAME_BY_BG[bg.toLowerCase()] ?? bg;
+
 const fmtWk = (n: number): string => {
   if (Number.isInteger(n)) return `${n}`;
   const r = Math.round(n * 100) / 100;
@@ -57,6 +67,8 @@ export function ColorPopover(props: {
   return (
     <div
       ref={ref}
+      role="group"
+      aria-label="Project color"
       className="anim-pop-in fixed z-50 rounded-xl border border-ink-200 bg-white p-3 shadow-2xl"
       style={{ top, left, width: w }}
     >
@@ -64,7 +76,11 @@ export function ColorPopover(props: {
         {COLORS.map(c => (
           <button
             key={c}
+            type="button"
             onClick={() => props.onPick(c)}
+            aria-label={nameFor(c)}
+            aria-pressed={c === props.value}
+            title={nameFor(c)}
             className={
               'h-7 w-7 rounded-full border-2 transition hover:scale-110 ' +
               (c === props.value ? 'border-ink-900 ring-2 ring-white ring-offset-1 ring-offset-ink-200' : 'border-transparent')
