@@ -1595,8 +1595,11 @@ function PasswordDialog(props: {
       <form
         onSubmit={submit}
         className="w-full max-w-sm rounded-2xl border border-ink-200 bg-white p-6 shadow-2xl shadow-ink-900/30"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="password-modal-title"
       >
-        <h2 className="text-[16px] font-semibold text-ink-900">{title}</h2>
+        <h2 id="password-modal-title" className="text-[16px] font-semibold text-ink-900">{title}</h2>
         {mode === 'set' && (
           <p className="mt-1 text-[12.5px] text-ink-500">
             Anyone visiting this plan will need the password before they can view or edit it.
