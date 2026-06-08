@@ -398,9 +398,12 @@ export function QuarterModal({
       <div
         className="w-full max-w-3xl rounded-2xl bg-white shadow-xl"
         onClick={e => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="quarter-modal-title"
       >
         <div className="flex items-center gap-3 border-b border-ink-100 px-5 py-3.5">
-          <h2 className="text-[15px] font-semibold tracking-tight text-ink-900">Quarter</h2>
+          <h2 id="quarter-modal-title" className="text-[15px] font-semibold tracking-tight text-ink-900">Quarter</h2>
           <span className="text-[12px] text-ink-500">— team size, length, and buffers</span>
           {!hasConfiguredQuarter && (
             <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10.5px] font-semibold uppercase tracking-[0.06em] text-amber-700">
