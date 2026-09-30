@@ -2412,7 +2412,9 @@ function WeekReleases({ releases, onEdit, showHeading = false }: {
                 }}
               >
                 <svg width="13" height="14" viewBox="0 0 14 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" className="shrink-0" aria-hidden>
-                  <path d="M3 14V2m0 1c3-3 5 3 8 0v6c-3 3-5-3-8 0" />
+                  <path d="M7 1.5C4.5 3.5 4 6 4 10.5h6C10 6 9.5 3.5 7 1.5Z" />
+                  <path d="m4 7-2.5 3v3L4 11m6-4 2.5 3v3L10 11M5.5 13 7 15l1.5-2" />
+                  <circle cx="7" cy="6.5" r="1.1" />
                 </svg>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-[11px] font-semibold leading-snug">{name}</span>
