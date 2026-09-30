@@ -9,6 +9,7 @@ Not really a Gantt chart (no time-spanning bars, no dependencies) — it's a cap
 - Multiple plans, each at its own slug-based URL (`/q4-big-orca-plan`)
 - Real-time sync across browsers via WebSockets (last-write-wins per update)
 - People, projects, and DRI (lead) marking
+- Project release dates with an inline date picker and color-coded weekly release markers
 - Two-week iterations with auto-computed working-week labels
 - Drag-and-drop or click-to-pick assignment
 - Estimated vs. planned eng-week tracking per project
@@ -64,7 +65,7 @@ Cost: ~$2-3/month for a `shared-cpu-1x` 256MB machine + 1GB volume, kept warm fo
 type State = {
   title: string;
   people: { id; name }[];
-  projects: { id; name; color; driId; url?; estimateEM?; priority?; bigRock?; descoped?; notes? }[];
+  projects: { id; name; color; driId; url?; releaseDate? /* YYYY-MM-DD */; estimateEM?; priority?; bigRock?; descoped?; notes? }[];
   iterations: { id; startDate /* YYYY-MM-DD Monday */; goal? }[];
   assignments: { id; personId; weekId /* `${iterId}:0|1` */; projectId }[];
   quarter?: { engineers; weeksInQuarter; firstResponderWeeks; weeksPerEM; buffers: { id; label; pct; note? }[]; engineersNote? };
@@ -79,6 +80,13 @@ work and is excluded from per-project planned-EM totals):
 - `__unavailable__` — person not on team that week
 
 The server stores the full state per plan as JSON in a single SQLite row.
+
+Release dates are the ship dates communicated to stakeholders, not dates inferred
+from assignments or estimates. Set or clear them in the projects table or project
+editor. Active projects appear above the matching week's notes in either schedule
+orientation, including in collapsed iterations. Weeks include Monday through
+Sunday, so weekend releases stay with that week. Dates outside the plan's
+iterations remain in the projects table and markdown export.
 
 ## License
 

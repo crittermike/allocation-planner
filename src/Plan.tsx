@@ -12,21 +12,11 @@ import {
 } from './Capacity';
 import { deriveCapacity } from './capacityShared';
 import { ColorPopover, ProjectEditModal } from './ProjectModal';
+import type { Project } from './types';
 
 type ID = string;
 
 type Person = { id: ID; name: string };
-type Project = {
-  id: ID;
-  name: string;
-  color: string;
-  driId: ID | null;
-  url?: string;
-  priority?: number;
-  descoped?: boolean;
-  estimateEM?: number;
-  notes?: string;
-};
 type Iteration = { id: ID; startDate: string; goal?: string };
 type Assignment = { id: ID; personId: ID; weekId: string; projectId: ID };
 
@@ -153,14 +143,20 @@ const lookupProject = (
     : projectsById[id];
 
 /* ---------- date helpers ---------- */
-const MS_PER_DAY = 86400000;
 const parseISODate = (s: string) => {
   const [y, m, d] = s.split('-').map(Number);
-  return new Date(y, m - 1, d);
+  const date = new Date(0);
+  date.setFullYear(y, m - 1, d);
+  date.setHours(0, 0, 0, 0);
+  return date;
 };
 const toISODate = (d: Date) =>
-  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-const addDays = (d: Date, n: number) => new Date(d.getTime() + n * MS_PER_DAY);
+  `${String(d.getFullYear()).padStart(4, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const addDays = (d: Date, n: number) => {
+  const date = new Date(d);
+  date.setDate(date.getDate() + n);
+  return date;
+};
 const mondayOf = (d: Date) => {
   const day = d.getDay();
   return addDays(d, day === 0 ? -6 : 1 - day);
@@ -228,12 +224,15 @@ const writeCollapsedIterationIds = (slug: string, ids: ID[]) => {
   } catch {}
 };
 
-type WeekInfo = { id: string; label: string; iterationId: ID; index: 0 | 1 };
+type WeekInfo = { id: string; label: string; startDate: string; iterationId: ID; index: 0 | 1 };
+type ScheduledRelease = Project & { releaseDate: string };
+
 const weeksOfIteration = (iter: Iteration): WeekInfo[] => {
   const start = parseISODate(iter.startDate);
   return [0, 1].map(i => ({
     id: `${iter.id}:${i}`,
     label: weekLabel(addDays(start, i * 7)),
+    startDate: toISODate(addDays(start, i * 7)),
     iterationId: iter.id,
     index: i as 0 | 1,
   }));
@@ -470,6 +469,18 @@ function PlanView({
     () => state.iterations.flatMap(weeksOfIteration),
     [state.iterations],
   );
+  const releasesByWeek = useMemo(() => {
+    const releases = state.projects
+      .filter((p): p is ScheduledRelease => !p.descoped && !!p.releaseDate)
+      .sort((a, b) => a.releaseDate.localeCompare(b.releaseDate) || a.name.localeCompare(b.name));
+    return Object.fromEntries(allWeeks.map(week => {
+      const endDate = toISODate(addDays(parseISODate(week.startDate), 7));
+      return [
+        week.id,
+        releases.filter(p => p.releaseDate >= week.startDate && p.releaseDate < endDate),
+      ] as const;
+    }));
+  }, [state.projects, allWeeks]);
   const iterationToneById = useMemo(() => {
     const today = startOfToday();
     const tones: Record<ID, IterationTone> = {};
@@ -566,11 +577,15 @@ function PlanView({
   const setTitle = (title: string) => setState(s => ({ ...s, title }));
   const renamePerson = (id: ID, name: string) =>
     setState(s => ({ ...s, people: s.people.map(p => (p.id === id ? { ...p, name } : p)) }));
-  const updateProject = (id: ID, patch: Partial<Project>) =>
+  const updateProject = (id: ID, patch: Partial<Project>) => {
+    if ('releaseDate' in patch && stateRef.current.projects.find(p => p.id === id)?.releaseDate !== patch.releaseDate) {
+      pushUndo();
+    }
     setState(s => ({
       ...s,
       projects: s.projects.map(p => (p.id === id ? { ...p, ...patch } : p)),
     }));
+  };
   const setWeekNote = (weekId: string, text: string) =>
     setState(s => {
       const next = { ...(s.weekNotes ?? {}) };
@@ -949,6 +964,11 @@ function PlanView({
   const [showWhatFits, setShowWhatFits] = useState<boolean>(() => !!state.quarter);
   const [copiedMd, setCopiedMd] = useState(false);
 
+  const editProject = (id: ID) => {
+    setIsAddingProject(false);
+    setEditingProjectId(id);
+  };
+
   const activeInitiatives = useMemo(
     () => sortByPriority(state.projects.filter(p => !p.descoped), state.projects),
     [state.projects],
@@ -1120,6 +1140,8 @@ function PlanView({
               state={state}
               allWeeks={allWeeks}
               projectsById={projectsById}
+              releasesByWeek={releasesByWeek}
+              onEditProject={editProject}
               collapsedIterationIds={collapsedIterationIds}
               currentIterationId={currentIterationId}
               iterationToneById={iterationToneById}
@@ -1145,6 +1167,8 @@ function PlanView({
               state={state}
               allWeeks={allWeeks}
               projectsById={projectsById}
+              releasesByWeek={releasesByWeek}
+              onEditProject={editProject}
               collapsedIterationIds={collapsedIterationIds}
               currentIterationId={currentIterationId}
               iterationToneById={iterationToneById}
@@ -1275,7 +1299,7 @@ function PlanView({
                 moveProjectToIndex={moveProjectToIndex}
                 weeksPerEM={cap.quarter.weeksPerEM}
                 plannedByProject={plannedByProject}
-                onEdit={id => { setIsAddingProject(false); setEditingProjectId(id); }}
+                onEdit={editProject}
                 highlightedProjectId={highlightedProjectId}
                 onHoverProject={setHighlightedProjectId}
               />
@@ -1783,6 +1807,8 @@ function Chart(props: {
   state: State;
   allWeeks: WeekInfo[];
   projectsById: Record<ID, Project>;
+  releasesByWeek: Record<string, ScheduledRelease[]>;
+  onEditProject: (id: ID) => void;
   collapsedIterationIds: Set<ID>;
   currentIterationId: ID | null;
   iterationToneById: Record<ID, IterationTone>;
@@ -1830,6 +1856,7 @@ function Chart(props: {
     (count, row) => count + (row.isCollapsed ? 1 : row.weeks.length),
     0,
   );
+  const hasReleases = Object.values(props.releasesByWeek).some(releases => releases.length > 0);
 
   /* ------ Click-drag-to-extend ------
    * When the user grabs the right edge of a chip and drags right, we add
@@ -1888,7 +1915,7 @@ function Chart(props: {
           <tr>
             <th
               rowSpan={2}
-              className="sticky left-0 top-0 z-30 w-[200px] min-w-[200px] border-b border-r-2 border-ink-200 border-r-ink-300 bg-ink-50 pl-5 pr-2 py-3 text-left align-bottom text-[10.5px] font-semibold uppercase tracking-[0.08em] text-ink-500"
+              className="sticky left-0 top-0 z-30 w-[128px] min-w-[128px] border-b border-r-2 border-ink-200 border-r-ink-300 bg-ink-50 pl-5 pr-2 py-3 text-left align-bottom text-[10.5px] font-semibold uppercase tracking-[0.08em] text-ink-500 sm:w-[200px] sm:min-w-[200px]"
             >
               <div className="flex items-center justify-between gap-2">
                 <span>Person</span>
@@ -2060,7 +2087,7 @@ function Chart(props: {
             <tr key={person.id} className="group/row">
               <td
                 className={
-                  'sticky left-0 z-10 w-[200px] min-w-[200px] border-b-2 border-r-2 border-ink-200 border-r-ink-300 px-3 py-3 align-middle ' +
+                  'sticky left-0 z-10 w-[128px] min-w-[128px] border-b-2 border-r-2 border-ink-200 border-r-ink-300 px-3 py-3 align-middle sm:w-[200px] sm:min-w-[200px] ' +
                   (rowIdx % 2 === 0 ? 'bg-white' : 'bg-ink-50')
                 }
               >
@@ -2070,7 +2097,7 @@ function Chart(props: {
                     onChange={e => props.renamePerson(person.id, e.target.value)}
                     onFocus={props.onTextFocus}
                     onBlur={props.onTextBlur}
-                    className="min-w-0 flex-1 rounded border border-transparent bg-transparent px-2 py-1 text-[13px] font-medium text-ink-900 outline-none transition hover:bg-white hover:shadow-sm focus:border-ink-300 focus:bg-white focus:ring-2 focus:ring-brand-200"
+                    className="w-0 min-w-0 flex-1 rounded border border-transparent bg-transparent px-2 py-1 text-[13px] font-medium text-ink-900 outline-none transition hover:bg-white hover:shadow-sm focus:border-ink-300 focus:bg-white focus:ring-2 focus:ring-brand-200"
                   />
                   <div className="flex flex-col opacity-0 group-hover/row:opacity-100">
                     <button
@@ -2156,9 +2183,37 @@ function Chart(props: {
               })}
             </tr>
           ))}
+          {hasReleases && (
+            <tr>
+              <th
+                scope="row"
+                className="sticky left-0 z-10 w-[128px] min-w-[128px] border-t-2 border-b border-r-2 border-ink-200 border-r-ink-300 bg-ink-50 px-5 py-2 text-left align-middle text-[10.5px] font-semibold uppercase tracking-[0.08em] text-ink-500 sm:w-[200px] sm:min-w-[200px]"
+                title="Communicated ship dates"
+              >
+                Releases
+              </th>
+              {iterationRows.flatMap(({ iter, tone, isCollapsed, weeks }) => {
+                const cells = isCollapsed
+                  ? [{ id: iter.id, releases: weeks.flatMap(w => props.releasesByWeek[w.id] ?? []) }]
+                  : weeks.map(w => ({ id: w.id, releases: props.releasesByWeek[w.id] ?? [] }));
+                return cells.map((cell, index) => (
+                  <td
+                    key={cell.id}
+                    className={
+                      'border-t-2 border-b border-r border-ink-200 p-1 align-top ' +
+                      (tone === 'current' ? 'bg-amber-50/40' : tone === 'past' ? 'bg-ink-50/70' : 'bg-white') +
+                      (index === cells.length - 1 ? ' border-r-2 border-r-ink-300' : '')
+                    }
+                  >
+                    <WeekReleases releases={cell.releases} onEdit={props.onEditProject} />
+                  </td>
+                ));
+              })}
+            </tr>
+          )}
           <tr className="group/notesrow">
             <td
-              className="sticky left-0 z-10 w-[200px] min-w-[200px] border-t-2 border-b border-r-2 border-ink-200 border-r-ink-300 bg-ink-50 px-5 py-2 align-middle text-[10.5px] font-semibold uppercase tracking-[0.08em] text-ink-500"
+              className="sticky left-0 z-10 w-[128px] min-w-[128px] border-t-2 border-b border-r-2 border-ink-200 border-r-ink-300 bg-ink-50 px-5 py-2 align-middle text-[10.5px] font-semibold uppercase tracking-[0.08em] text-ink-500 sm:w-[200px] sm:min-w-[200px]"
             >
               Notes
             </td>
@@ -2327,11 +2382,59 @@ function CollapsedIterationCell(props: {
   );
 }
 
+function WeekReleases({ releases, onEdit, showHeading = false }: {
+  releases: ScheduledRelease[];
+  onEdit: (id: ID) => void;
+  showHeading?: boolean;
+}) {
+  if (releases.length === 0) return null;
+  return (
+    <div className="p-1">
+      {showHeading && (
+        <div className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-500">Releases</div>
+      )}
+      <ul aria-label="Scheduled releases" className="space-y-1">
+        {releases.map(project => {
+          const date = parseISODate(project.releaseDate);
+          const fullDate = date.toLocaleDateString('en-US', { dateStyle: 'full' });
+          const name = project.name || 'Untitled project';
+          return (
+            <li key={project.id}>
+              <button
+                type="button"
+                onClick={e => { e.stopPropagation(); onEdit(project.id); }}
+                title={`${name}\nCommunicated release: ${fullDate}\nClick to edit project`}
+                aria-label={`${name} releases ${fullDate}; edit project`}
+                className="chip-tint flex w-full max-w-[240px] items-center gap-2 rounded-md border px-2 py-1.5 text-left transition-shadow hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-400"
+                style={{
+                  ['--cc' as string]: project.color,
+                  ['--cc-dark' as string]: darkBgFor(project.color),
+                }}
+              >
+                <svg width="13" height="14" viewBox="0 0 14 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" className="shrink-0" aria-hidden>
+                  <path d="M3 14V2m0 1c3-3 5 3 8 0v6c-3 3-5-3-8 0" />
+                </svg>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[11px] font-semibold leading-snug">{name}</span>
+                  <time dateTime={project.releaseDate} className="block text-[10px] leading-snug tabular-nums">
+                    {date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
+                  </time>
+                </span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 function CollapsedNotesCell(props: {
   tone: IterationTone;
   topBorder?: boolean;
   onExpand: () => void;
   notes: string[];
+  children?: React.ReactNode;
 }) {
   const bg =
     props.tone === 'current'
@@ -2363,6 +2466,7 @@ function CollapsedNotesCell(props: {
         }}
         aria-hidden
       />
+      {props.children}
       <div className="relative flex h-full w-full items-center gap-1.5 px-2.5">
         {hasNotes ? (
           <>
@@ -2627,6 +2731,8 @@ function ChartTransposed(props: {
   state: State;
   allWeeks: WeekInfo[];
   projectsById: Record<ID, Project>;
+  releasesByWeek: Record<string, ScheduledRelease[]>;
+  onEditProject: (id: ID) => void;
   collapsedIterationIds: Set<ID>;
   currentIterationId: ID | null;
   iterationToneById: Record<ID, IterationTone>;
@@ -2648,6 +2754,7 @@ function ChartTransposed(props: {
   onTextBlur: () => void;
 }) {
   const { state, allWeeks, projectsById } = props;
+  const hasReleases = Object.values(props.releasesByWeek).some(releases => releases.length > 0);
   const [picker, setPicker] = useState<{ personId: ID; weekId: string; rect: DOMRect } | null>(null);
   const iterationRows = useMemo(
     () => state.iterations.map((iter, idx) => ({
@@ -2709,13 +2816,13 @@ function ChartTransposed(props: {
   };
 
   // Sticky column widths
-  const ITER_W = 140;
-  const WEEK_W = 96;
+  const ITER_W = 'var(--iteration-column-width)';
+  const WEEK_W = 'var(--week-column-width)';
 
   return (
     <div
       className={
-        'inline-block min-w-full overflow-clip rounded-2xl border border-ink-200 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04),0_8px_24px_-12px_rgba(15,23,42,0.08)]' +
+        'inline-block min-w-full overflow-clip rounded-2xl border border-ink-200 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04),0_8px_24px_-12px_rgba(15,23,42,0.08)] [--iteration-column-width:92px] [--week-column-width:80px] sm:[--iteration-column-width:140px] sm:[--week-column-width:96px]' +
         (extending ? ' select-none' : '')
       }
     >
@@ -2791,7 +2898,7 @@ function ChartTransposed(props: {
             </th>
             {/* Notes col */}
             <th className="sticky top-0 z-20 h-9 w-[220px] min-w-[180px] border-b border-ink-200 bg-ink-50 px-3 align-middle text-left text-[10.5px] font-semibold uppercase tracking-[0.08em] text-ink-500">
-              Notes
+              {hasReleases ? 'Releases & notes' : 'Notes'}
             </th>
           </tr>
         </thead>
@@ -2985,7 +3092,13 @@ function ChartTransposed(props: {
                     tone={tone}
                     onExpand={() => props.toggleIterationCollapsed(iter.id)}
                     notes={collectIterationNotes(state.weekNotes, weeks)}
-                  />
+                  >
+                    <WeekReleases
+                      releases={weeks.flatMap(w => props.releasesByWeek[w.id] ?? [])}
+                      onEdit={props.onEditProject}
+                      showHeading
+                    />
+                  </CollapsedNotesCell>
                 </tr>
               );
             }
@@ -3062,6 +3175,11 @@ function ChartTransposed(props: {
                       (isCurrent ? 'bg-amber-50/40' : isPast ? 'bg-ink-50/70' : 'bg-white')
                     }
                   >
+                    <WeekReleases
+                      releases={props.releasesByWeek[w.id] ?? []}
+                      onEdit={props.onEditProject}
+                      showHeading
+                    />
                     <WeekNoteTextarea
                       value={state.weekNotes?.[w.id] ?? ''}
                       onChange={text => props.setWeekNote(w.id, text)}

@@ -24,6 +24,43 @@ const fmtWk = (n: number): string => {
   return r % 1 === 0 ? `${r}` : parseFloat(r.toFixed(2)).toString();
 };
 
+export function ReleaseDatePicker({ project, onChange }: {
+  project: Project;
+  onChange: (date: string | undefined) => void;
+}) {
+  const name = project.name || 'Untitled project';
+  return (
+    <div className="flex h-8 w-full min-w-[174px] max-w-[220px] items-center rounded-md border border-ink-200 bg-white transition-colors hover:border-ink-300 focus-within:border-brand-400 focus-within:ring-2 focus-within:ring-brand-200">
+      <input
+        type="date"
+        min="0001-01-01"
+        max="9999-12-31"
+        value={project.releaseDate ?? ''}
+        aria-label={`Release date for ${name}`}
+        title="The date you've communicated this project will ship"
+        onChange={e => {
+          if (!e.currentTarget.reportValidity()) return;
+          onChange(e.currentTarget.value || undefined);
+        }}
+        className="h-full min-w-0 flex-1 bg-transparent px-2 text-[12px] tabular-nums text-ink-700 outline-none"
+      />
+      {project.releaseDate && (
+        <button
+          type="button"
+          onClick={() => onChange(undefined)}
+          title="Clear release date"
+          aria-label={`Clear release date for ${name}`}
+          className="mr-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-ink-500 transition-colors hover:bg-ink-100 hover:text-ink-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-400"
+        >
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden>
+            <path d="m3 3 6 6m0-6-6 6" />
+          </svg>
+        </button>
+      )}
+    </div>
+  );
+}
+
 /* ============================================================ */
 /* ColorPopover                                                  */
 /* ============================================================ */
@@ -299,6 +336,15 @@ export function ProjectEditModal(props: {
               ))}
             </select>
           </label>
+
+          <div className="flex flex-col gap-1">
+            <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-500">Release date</span>
+            <ReleaseDatePicker
+              project={project}
+              onChange={releaseDate => props.onUpdate({ releaseDate })}
+            />
+            <p className="text-[11.5px] text-ink-500">The date you've communicated this project will ship.</p>
+          </div>
 
           <label className="flex flex-col gap-1">
             <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-500">URL (e.g. tracking issue)</span>

@@ -42,6 +42,7 @@ Run `npm run build` before claiming code changes are complete — it both typech
 
 - The persisted `PlanState` shape (see `src/types.ts`): `title`, `people`, `projects`, `iterations`, `assignments`, optional `weekNotes`, optional `quarter`.
 - Capacity-planning project fields are all optional and additive: `estimateEM` (engineering-months), `priority`, `descoped`, `driId`, `url`, `notes`. Older saved plans without them keep working.
+- `Project.releaseDate` is an optional communicated ship date (`YYYY-MM-DD`), independent of assignments. Group active projects into Monday-Sunday release weeks using calendar-day arithmetic, not elapsed milliseconds, so DST cannot shift a release into the wrong week.
 - `Quarter` carries the planning inputs: `engineers`, `weeksInQuarter`, `firstResponderWeeks`, `weeksPerEM`, and a list of `Buffer` rows (`{ id, label, pct, note? }`). `weeksPerEM` is always forced to the canonical `WEEKS_PER_EM = 4` when read, so any stale override is ignored.
 - Pure UI preferences belong in `localStorage`, not in `PlanState`, unless they're explicitly meant to sync across users. Existing examples live in `src/Plan.tsx`.
 - `setState` from `usePlan` updates locally first, then sends the whole state over WS after a short debounce. WebSocket updates are last-write-wins at the full-state level — avoid making unrelated state rewrites in UI handlers, and never read-modify-write off stale local state.

@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { fmtNum, WEEKS_PER_EM, type CapacityInfo } from './capacityShared';
-import { ProjectEditModal } from './ProjectModal';
+import { ProjectEditModal, ReleaseDatePicker } from './ProjectModal';
 import type { Buffer, Person, PlanState, Project, Quarter } from './types';
 
 type ID = string;
@@ -688,6 +688,7 @@ export function PrioritizationTable({
           <th className="px-2 py-2 text-left">Project</th>
           <th className="w-[120px] px-2 py-2 text-left">DRI</th>
           <th className="w-[180px] px-2 py-2 text-right">Estimate (Eng Months)</th>
+          <th scope="col" className="w-[190px] whitespace-nowrap px-2 py-2 text-left" title="Communicated ship date">Release date</th>
           <th className="px-2 py-2 text-left">Notes</th>
           <th className="w-[100px] px-2 py-2 text-right">Actions</th>
         </tr>
@@ -787,7 +788,6 @@ function InitiativeRow({
   onDragOverRow: (pos: 'before' | 'after') => void;
   onDropRow: () => void;
 }) {
-  void onUpdate; // future: inline DRI/notes editors
   const fadedClass = (showWhatFits && pastFitLine ? 'opacity-50' : '') + (isDimmed ? ' opacity-60' : '');
   const highlightClass = isHighlighted
     ? 'bg-amber-50/70 ring-1 ring-inset ring-amber-300/70'
@@ -835,7 +835,7 @@ function InitiativeRow({
     <>
       {isFitLine && showWhatFits && (
         <tr aria-hidden>
-          <td colSpan={6} className="border-y-2 border-dashed border-rose-300 bg-rose-50/40 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-rose-700">
+          <td colSpan={7} className="border-y-2 border-dashed border-rose-300 bg-rose-50/40 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-rose-700">
             ↓ Below the line: over capacity. Consider descoping.
           </td>
         </tr>
@@ -925,6 +925,12 @@ function InitiativeRow({
             {emBadgeText}
             <span className="text-[10px] opacity-70">EM</span>
           </button>
+        </td>
+        <td className="px-2 py-2 align-middle">
+          <ReleaseDatePicker
+            project={project}
+            onChange={releaseDate => onUpdate({ releaseDate })}
+          />
         </td>
         <td className="px-2 py-2 align-middle">
           <button
@@ -1175,26 +1181,28 @@ export function exportPlanMarkdown(
   if (activeInitiatives.length === 0) {
     lines.push('_None yet._');
   } else {
-    lines.push('| # | Project | EM est | EM planned | Notes |');
-    lines.push('|---|---------|-------:|-----------:|-------|');
+    lines.push('| # | Project | EM est | EM planned | Release date | Notes |');
+    lines.push('|---|---------|-------:|-----------:|--------------|-------|');
     activeInitiatives.forEach((p, i) => {
       const est = p.estimateEM != null ? fmtNum(p.estimateEM, 2) : '—';
       const plannedEMVal = (plannedByProject[p.id] ?? 0) / WEEKS_PER_EM;
       const planned = plannedEMVal > 0 ? fmtNum(plannedEMVal, 2) : '0';
+      const releaseDate = p.releaseDate ? escapeMd(p.releaseDate) : '—';
       const notes = p.notes ? escapeMd(p.notes) : '';
-      lines.push(`| ${i + 1} | ${escapeMd(p.name)} | ${est} | ${planned} | ${notes} |`);
+      lines.push(`| ${i + 1} | ${escapeMd(p.name)} | ${est} | ${planned} | ${releaseDate} | ${notes} |`);
     });
   }
   lines.push('');
 
   if (descopedInitiatives.length > 0) {
     lines.push('## Descoped');
-    lines.push('| # | Project | EM est | Notes |');
-    lines.push('|---|---------|-------:|-------|');
+    lines.push('| # | Project | EM est | Release date | Notes |');
+    lines.push('|---|---------|-------:|--------------|-------|');
     descopedInitiatives.forEach((p, i) => {
       const est = p.estimateEM != null ? fmtNum(p.estimateEM, 2) : '—';
+      const releaseDate = p.releaseDate ? escapeMd(p.releaseDate) : '—';
       const notes = p.notes ? escapeMd(p.notes) : '';
-      lines.push(`| ${i + 1} | ${escapeMd(p.name)} | ${est} | ${notes} |`);
+      lines.push(`| ${i + 1} | ${escapeMd(p.name)} | ${est} | ${releaseDate} | ${notes} |`);
     });
     lines.push('');
   }
