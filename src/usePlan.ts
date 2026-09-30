@@ -7,16 +7,19 @@ export type ConnState = 'connecting' | 'open' | 'closed' | 'missing';
 export type PasswordError = 'wrong_password' | 'too_many_attempts' | 'auth_required' | 'password_too_short' | 'password_too_long' | 'unknown';
 
 /** Migrate plan state from older schemas so old plans keep working.
- *  Currently handles: legacy `Project.estimatedWeeks` (eng-weeks) →
- *  `Project.estimateEM` (eng-months) using the canonical 4-weeks-per-EM ratio. */
+ *  Convert legacy estimates to EM and leave release dates unset on older plans. */
 function migrateState(raw: any): PlanState {
   if (!raw || typeof raw !== 'object') return raw;
   const projects = Array.isArray(raw.projects)
     ? raw.projects.map((p: any) => {
-        if (p && p.estimateEM == null && typeof p.estimatedWeeks === 'number') {
-          return { ...p, estimateEM: p.estimatedWeeks / 4 };
-        }
-        return p;
+        if (!p) return p;
+        return {
+          ...p,
+          ...(p.estimateEM == null && typeof p.estimatedWeeks === 'number'
+            ? { estimateEM: p.estimatedWeeks / 4 }
+            : {}),
+          releaseDate: p.releaseDate || undefined,
+        };
       })
     : raw.projects;
   return { ...raw, projects } as PlanState;
@@ -198,7 +201,7 @@ export function usePlan(slug: string | null): UsePlan {
         if (!r.ok) throw new Error('http ' + r.status);
         const data = await r.json();
         if (stopped) return;
-        setLocalState(data.state);
+        setLocalState(migrateState(data.state));
         setPlanName(data.name ?? null);
         setHasPassword(!!data.hasPassword);
         setPasswordRequired(false);

@@ -7,6 +7,8 @@ export type Project = {
   color: string;
   driId: ID | null;
   url?: string;
+  /** Communicated ship date, stored as a YYYY-MM-DD calendar date. */
+  releaseDate?: string;
   /** Capacity planning fields (all optional, additive). */
   priority?: number;
   descoped?: boolean;
