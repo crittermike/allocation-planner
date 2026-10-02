@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
+import { parseGitHubIssueUrl } from './scope';
+import { ScopePanel, scopeTrackingEnabled } from './ScopePanel';
 import type { Person, Project } from './types';
 
 /** Chip-style EM values offered in the picker. Must stay in sync with the
@@ -244,14 +246,21 @@ export function ProjectEditModal(props: {
   } else if (plannedEM === 0) {
     badgeClass = 'bg-transparent text-ink-400 border-transparent';
   }
+  // Projects linked to a GitHub issue get scope tracking automatically.
+  const trackedIssue = scopeTrackingEnabled ? parseGitHubIssueUrl(project.url) : null;
 
   return (
     <div
       className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink-900/40 px-4 py-12 backdrop-blur-sm"
       onMouseDown={e => { if (e.target === e.currentTarget) props.onClose(); }}
     >
-      <div className="anim-pop-in w-full max-w-lg rounded-2xl border border-ink-200 bg-white shadow-2xl">
-        <div className="flex items-center justify-between gap-3 border-b border-ink-100 px-5 py-3.5">
+      <div
+        className={
+          'anim-pop-in w-full rounded-2xl border border-ink-200 bg-white shadow-2xl ' +
+          (trackedIssue ? 'max-w-[1200px] lg:grid lg:grid-cols-[512px_minmax(0,1fr)]' : 'max-w-lg')
+        }
+      >
+        <div className="flex items-center justify-between gap-3 border-b border-ink-100 px-5 py-3.5 lg:col-span-2">
           <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-500">Project</span>
           <button
             type="button"
@@ -382,7 +391,12 @@ export function ProjectEditModal(props: {
             />
           </label>
         </div>
-        <div className="flex items-center justify-between gap-2 border-t border-ink-100 bg-ink-50/40 px-5 py-3">
+        {trackedIssue && (
+          <div className="min-w-0 border-t border-ink-100 px-5 py-5 lg:border-l lg:border-t-0">
+            <ScopePanel key={trackedIssue.url} issue={trackedIssue} releaseDate={project.releaseDate} />
+          </div>
+        )}
+        <div className="flex items-center justify-between gap-2 border-t border-ink-100 bg-ink-50/40 px-5 py-3 lg:col-span-2">
           {!props.isNew ? (
             <button
               type="button"
