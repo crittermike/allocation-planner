@@ -904,3 +904,11 @@ export function trackingFromHistory(
   }
   return tracking;
 }
+
+/** Whether the tracked issue has, or ever had, sub-issues to show. */
+export function hasSubIssues(t: ScopeTracking): boolean {
+  return t.snapshots.some(s => {
+    const snap = index(s);
+    return s.issues.some(issue => isInside(issue, snap, t.root.id));
+  });
+}

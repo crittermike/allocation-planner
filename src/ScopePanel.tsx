@@ -7,6 +7,7 @@ import {
   RAMP_WEEKS,
   analyzeScope,
   canForecast,
+  hasSubIssues,
   isCreep,
   issueKey,
   maxCreepForTarget,
@@ -202,7 +203,17 @@ type PanelProps = {
   source: ScopeSource;
   releaseDate?: string;
   projects: Project[];
+  /** Delay before loading, so typing an issue URL doesn't load every partial number. */
+  settleMs?: number;
+  /** Whether there's anything to show: sub-issues, or a problem worth reporting. */
+  onVisibleChange?: (visible: boolean) => void;
 };
+
+function useReportVisible(visible: boolean, onVisibleChange?: (visible: boolean) => void) {
+  useEffect(() => {
+    onVisibleChange?.(visible);
+  }, [visible, onVisibleChange]);
+}
 
 export function ScopePanel(props: PanelProps) {
   return import.meta.env.DEV && props.source === 'demo' ? <DemoScope {...props} /> : <GitHubScope {...props} />;
@@ -238,9 +249,11 @@ function Unreadable({ issue, at }: { issue: GitHubIssueRef; at: string }) {
 /** Demo scenario picked per URL, kept while the page is open. */
 const chosenScenarios = new Map<string, DemoScenario>();
 
-function DemoScope({ issue, releaseDate, projects }: PanelProps) {
+function DemoScope({ issue, releaseDate, projects, onVisibleChange }: PanelProps) {
   const [scenario, setScenario] = useState<DemoScenario>(() => chosenScenarios.get(issue.url) ?? 'normal');
   const load = useMemo(() => demoScope(issue, scenario), [issue.url, scenario]);
+  // The scenario switcher stays reachable even when a scenario has no sub-issues.
+  useReportVisible(true, onVisibleChange);
   return (
     <PanelFrame
       status={load.status === 'ready' && (
@@ -277,12 +290,12 @@ function DemoScope({ issue, releaseDate, projects }: PanelProps) {
   );
 }
 
-/** Wait for the URL to settle, so typing an issue URL doesn't load every partial number. */
+/** Default wait before loading after an issue URL changes. */
 const URL_SETTLE_MS = 700;
 const POLL_MS = 4000;
 const MAX_POLLS = 15;
 
-function GitHubScope({ slug, issue, releaseDate, projects }: PanelProps) {
+function GitHubScope({ slug, issue, releaseDate, projects, settleMs = URL_SETTLE_MS, onVisibleChange }: PanelProps) {
   const [response, setResponse] = useState<ScopeResponse | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -303,12 +316,12 @@ function GitHubScope({ slug, issue, releaseDate, projects }: PanelProps) {
         timer = window.setTimeout(load, POLL_MS);
       }
     };
-    timer = window.setTimeout(load, URL_SETTLE_MS);
+    timer = window.setTimeout(load, settleMs);
     return () => {
       alive = false;
       window.clearTimeout(timer);
     };
-  }, [slug, issue.url]);
+  }, [slug, issue.url, settleMs]);
 
   const refresh = async () => {
     setRefreshing(true);
@@ -323,6 +336,11 @@ function GitHubScope({ slug, issue, releaseDate, projects }: PanelProps) {
       : null),
     [response],
   );
+  // Issues without sub-issues show nothing. A just-edited URL that isn't saved yet isn't an error.
+  const visible = tracking
+    ? hasSubIssues(tracking)
+    : response?.status === 'unreadable' || (response?.status === 'error' && response.code !== 403);
+  useReportVisible(visible, onVisibleChange);
   const busy = refreshing || (response?.status === 'ready' && response.refreshing);
 
   return (

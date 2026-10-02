@@ -231,6 +231,8 @@ export function ProjectEditModal(props: {
   const [colorOpen, setColorOpen] = useState(false);
   const [colorRect, setColorRect] = useState<DOMRect | null>(null);
   const scopeConfig = useScopeConfig();
+  const [scopeVisible, setScopeVisible] = useState(false);
+  const openedUrl = useRef(props.project.url);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') props.onClose(); };
@@ -262,7 +264,7 @@ export function ProjectEditModal(props: {
       <div
         className={
           'anim-pop-in w-full rounded-2xl border border-ink-200 bg-white shadow-2xl ' +
-          (tracked ? 'max-w-[1200px] lg:grid lg:grid-cols-[512px_minmax(0,1fr)]' : 'max-w-lg')
+          (tracked && scopeVisible ? 'max-w-[1200px] lg:grid lg:grid-cols-[512px_minmax(0,1fr)]' : 'max-w-lg')
         }
       >
         <div className="flex items-center justify-between gap-3 border-b border-ink-100 px-5 py-3.5 lg:col-span-2">
@@ -397,7 +399,7 @@ export function ProjectEditModal(props: {
           </label>
         </div>
         {tracked && props.slug && (
-          <div className="min-w-0 border-t border-ink-100 px-5 py-5 lg:border-l lg:border-t-0">
+          <div className={'min-w-0 border-t border-ink-100 px-5 py-5 lg:border-l lg:border-t-0' + (scopeVisible ? '' : ' hidden')}>
             <ScopePanel
               key={tracked.issue.url}
               slug={props.slug}
@@ -405,6 +407,8 @@ export function ProjectEditModal(props: {
               source={tracked.source}
               releaseDate={project.releaseDate}
               projects={props.projects ?? []}
+              settleMs={project.url === openedUrl.current ? 0 : undefined}
+              onVisibleChange={setScopeVisible}
             />
           </div>
         )}
