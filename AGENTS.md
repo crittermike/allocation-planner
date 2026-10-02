@@ -28,16 +28,18 @@ Run `npm run build` before claiming code changes are complete — it both typech
 - `src/Plan.tsx`: main planner UI (~3.8k lines). Owns chart rendering in both orientations (`Chart` = people-as-rows, `ChartTransposed` = weeks-as-rows), drag/drop assignment behavior, projects table with DRI column and drag-to-reorder, the projects flyout (which embeds the capacity bars), per-week notes modal, and most local UI preferences (`localStorage`).
 - `src/Capacity.tsx`: capacity-planning surface — `CapacityBars` (Estimate + Actual stacked bars), `QuarterModal` (engineers / weeks / first-responder weeks / buffer rows), `PrioritizationTable` (top-level orchestrator, "show what fits" mode), `DescopedDrawer`, and `exportPlanMarkdown`.
 - `src/capacityShared.tsx`: single source of truth for capacity math. Exports `deriveCapacity(state)` which returns `CapacityInfo` (capacityEM, demandEM, gap, plannedByProject, frWeeksInPlan, etc.), plus the `WEEKS_PER_EM = 4` constant and the sentinel-id helpers. All capacity consumers (bars, projects table, markdown export) must read from `deriveCapacity` to avoid formula drift.
-- `src/ProjectModal.tsx`: project edit modal, `ColorPopover`, and `EmPicker` (chip-style EM picker plus "weeks × engineers" auto-convert). Exports `EM_CHIPS` (must stay in sync with what `Capacity.tsx` displays). Widens to two columns with `ScopePanel` when the project URL is a GitHub issue.
-- `src/scope.ts`: scope tracking for projects whose URL is a GitHub issue — URL parsing, snapshot types, the counting rules (leaf sub-issues only; not planned/duplicate is removal, not completion), change detection, creep (new issues after work starts; splits and moves between milestones don't count), pace blending from finished milestones, and forecasts (`analyzeScope`, `projectFinish`, `maxCreepForTarget`). Epics get one view per milestone and no combined forecast. All scope numbers must come from here.
-- `src/ScopePanel.tsx`: the project modal's scope view (milestone table for epics, verdict, burn-up chart, creep slider forecast with break-even against the release date, changes, remaining). Milestones take their release date from the plan project linked to the same issue. **Prototype:** it only renders demo data, so it is dev-only until a GitHub connector exists.
-- `src/scopeDemo.ts`: one fictional epic (#700, milestones #701–#706) and a scenario switcher for the prototype. Dev builds only (`import.meta.env.DEV`); tree-shaken out of production. Never mix demo data with real GitHub observations.
+- `src/ProjectModal.tsx`: project edit modal, `ColorPopover`, and `EmPicker` (chip-style EM picker plus "weeks × engineers" auto-convert). Exports `EM_CHIPS` (must stay in sync with what `Capacity.tsx` displays). Widens to two columns with `ScopePanel` when the project URL is a GitHub issue the server can read (`scopeSourceFor`).
+- `src/scope.ts`: scope tracking for projects whose URL is a GitHub issue — URL parsing, snapshot types, `trackingFromHistory` (rebuilds snapshots from GitHub's history of sub-issues added/removed and issues closed/reopened), the counting rules (leaf sub-issues only; not planned/duplicate is removal, not completion), change detection, creep (new issues after work starts; splits and moves between milestones don't count), pace blending from finished milestones, and forecasts (`analyzeScope`, `projectFinish`, `maxCreepForTarget`). Epics get one view per milestone and no combined forecast. All scope numbers must come from here.
+- `src/ScopePanel.tsx`: the project modal's scope view (milestone table for epics, verdict, burn-up chart, creep slider forecast with break-even against the release date, changes, remaining). Loads GitHub data through `src/scopeApi.ts`; milestones take their release date from the plan project linked to the same issue.
+- `src/scopeApi.ts`: `/api/config` (whether the server has a GitHub token, and its repo allowlist) and the scope endpoints, sent with the plan's unlock token.
+- `src/scopeDemo.ts`: one fictional epic (`acme-demo/invoice-exports` #700, milestones #701–#706) with a scenario switcher, for UI work without a token. Dev builds only (`import.meta.env.DEV`); tree-shaken out of production. Never mix demo data with real GitHub observations.
 - `src/usePlan.ts`: HTTP/WS plan loading, optimistic local updates, debounced syncing (`SEND_DEBOUNCE_MS = 120`), reconnect behavior, visit tracking, password unlock/change, and the `migrateState` shim that upgrades older saved plans on read.
 - `src/types.ts`: shared plan data shapes (`PlanState`, `Project`, `Quarter`, `Buffer`, etc.).
 - `src/styles.css`: small custom CSS layered on top of Tailwind v4.
 
 ### Backend / infra
-- `server/index.js`: SQLite schema + migrations (password columns are idempotent `ALTER TABLE`s), REST API, static frontend serving, WebSocket room management (one room per slug), and the initial plan state used when a new plan is created.
+- `server/index.js`: SQLite schema + migrations (password columns are idempotent `ALTER TABLE`s), REST API, static frontend serving, WebSocket room management (one room per slug), and the initial plan state used when a new plan is created. Loads `.env` from the repo root when present.
+- `server/scope.js`: GitHub connector for scope tracking. Reads an issue's sub-issue tree and each issue's history over GraphQL with `GITHUB_TOKEN` (a milestone's small parent epic is fetched too, for moves and finished milestones' pace), caches the last complete result per issue in the `scope_cache` table, and refreshes in the background after 15 minutes. Partial or failed fetches never replace cached data.
 - `Dockerfile`, `fly.toml`: Fly.io deployment and production container setup. `min_machines_running = 1` keeps WS reconnects snappy.
 - `.github/workflows/ci.yml`: typecheck + build on push to `main` and on PRs.
 
@@ -77,6 +79,13 @@ When adding new non-project assignment types, add a new sentinel ID and update `
 - Unlock tokens are HMAC-signed with a per-install secret persisted to `${DATA_DIR}/.token-secret` (or `PLAN_TOKEN_SECRET` env var). Tokens are stored client-side in `localStorage` under `plan-token:<slug>`.
 - All password-related flows (`submitPassword`, `changePassword`, `passwordRequired`) are in `src/usePlan.ts`.
 - Without a password set, plans remain fully open — anyone with the URL can view and edit.
+
+## GitHub scope tracking
+
+- Enabled only when the server has `GITHUB_TOKEN` (a fine-grained, read-only Issues token). `GITHUB_SCOPE_REPOS` optionally limits which repos it reads. Never put the token in browser code or a committed file; locally it lives in the gitignored `.env`.
+- `/api/plans/:slug/scope?url=…` (and `POST …/scope/refresh`) only serve issues that a project in that plan links to, and use the plan's password check, so the server's token can't be used to read arbitrary issues.
+- The server only fetches and caches GitHub's history (`ScopeHistory`). All counting and forecasting runs in the browser through `src/scope.ts`, so demo data and real data share one code path.
+- Count completions from each issue's close reason. GitHub's `subIssuesSummary.completed` counts "not planned" closures as completed.
 
 ## Data and deployment cautions
 

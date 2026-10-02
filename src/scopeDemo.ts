@@ -12,7 +12,10 @@
  */
 import { analyzeScope, type GitHubIssueRef, type ScopeIssue, type ScopeLoad, type ScopeSnapshot, type ScopeTracking } from './scope';
 
-export const SCOPE_DEMO_ENABLED = import.meta.env.DEV;
+const DEMO_OWNER = 'acme-demo';
+
+/** The fictional issues demo data exists for. */
+export const isDemoIssue = (ref: GitHubIssueRef) => ref.owner.toLowerCase() === DEMO_OWNER;
 
 export const DEMO_SCENARIOS = [
   { id: 'normal', label: 'Normal' },
@@ -27,7 +30,7 @@ const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 const HISTORY_DAYS = 112;
-const DEMO_ISSUE_URL = 'https://github.com/acme-demo/invoice-exports/issues/';
+const DEMO_ISSUE_URL = `https://github.com/${DEMO_OWNER}/invoice-exports/issues/`;
 const EPIC = 700;
 const MILESTONES = [701, 702, 703, 704, 705, 706];
 /** Other issue numbers show one of these, so any GitHub issue URL gets demo data. */

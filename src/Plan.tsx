@@ -1337,6 +1337,7 @@ function PlanView({
         onRemove={() => removeProject(editingProject.id)}
         onClose={() => { setEditingProjectId(null); setIsAddingProject(false); }}
         isNew={isAddingProject}
+        slug={slug}
         projects={state.projects}
       />
     )}

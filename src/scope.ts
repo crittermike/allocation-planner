@@ -66,6 +66,8 @@ export type ScopeTracking = {
   refreshError?: { at: string; message: string };
   /** Finished sibling milestones, for estimating a milestone tracked on its own. */
   reference?: ReferencePace[];
+  /** Data-quality notes to show with the results. */
+  warnings?: string[];
 };
 
 export type ScopeLoad =
@@ -250,10 +252,21 @@ const outOfScope = (i: ScopeIssue) =>
 
 const closedLabel = (i: ScopeIssue) => (i.closeReason === 'duplicate' ? 'duplicate' : 'not planned');
 
-/** "M4" for milestone-style titles, otherwise the issue number. */
+/** "M4" for milestone-style titles ("M4: …", "… Milestone 4: …"), otherwise the issue number. */
 export function shortLabel(issue: { number: number; title: string }): string {
-  const m = issue.title.match(/^\s*(M\d+)\b/i);
-  return m ? m[1].toUpperCase() : `#${issue.number}`;
+  const m = issue.title.match(/\bM(?:ilestone)?\s*(\d+)\b/i);
+  return m ? `M${m[1]}` : `#${issue.number}`;
+}
+
+/** Display names for an epic's milestones: "Milestone 4" shortened to "M4", and
+ *  words every milestone title starts with (like the epic's name) dropped. */
+export function milestoneNames(titles: string[]): string[] {
+  const short = titles.map(t => t.replace(/\bMilestone\s+(\d+)\b/i, 'M$1').trim());
+  if (short.length < 2) return short;
+  const words = short.map(t => t.split(/\s+/));
+  let common = 0;
+  while (words.every(w => w.length > common + 1 && w[common].toLowerCase() === words[0][common].toLowerCase())) common++;
+  return words.map(w => w.slice(common).join(' '));
 }
 
 function isInside(issue: ScopeIssue, snap: Indexed, rootId: string): boolean {
@@ -365,12 +378,22 @@ function diff(
   return events;
 }
 
+/** Finished issues, minus reopened ones and finished ones later marked not planned or duplicate. */
+function netCompleted(events: ScopeEvent[]): number {
+  let n = 0;
+  for (const e of events) {
+    if (e.kind === 'completed') n++;
+    else if (e.kind === 'reopened' || (e.kind === 'removed' && e.reason === 'dropped' && !e.wasOpen)) n--;
+  }
+  return n;
+}
+
 function observe(events: ScopeEvent[], startedAt: number, asOf: number): OwnPace {
   const windowStart = Math.max(startedAt, asOf - FORECAST_WINDOW_DAYS * DAY);
   const recent = events.filter(e => Date.parse(e.at) >= windowStart);
   const count = (pred: (e: ScopeEvent) => boolean) => recent.filter(pred).length;
   const windowWeeks = Math.max(1 / 7, (asOf - windowStart) / WEEK);
-  const completed = count(e => e.kind === 'completed') - count(e => e.kind === 'reopened');
+  const completed = netCompleted(recent);
   const creep = count(isCreep);
   return {
     windowStart: iso(windowStart),
@@ -503,7 +526,7 @@ function summarize(snaps: Indexed[], member: Member, asOf: number, refs: Referen
 function referencePace(milestone: ScopeIssue, s: ScopeSummary): ReferencePace | null {
   if (!s.startedAt || !s.finishedAt) return null;
   const weeks = Math.max(1, (Date.parse(s.finishedAt) - Date.parse(s.startedAt)) / WEEK);
-  const finished = s.events.filter(e => e.kind === 'completed').length - s.events.filter(e => e.kind === 'reopened').length;
+  const finished = netCompleted(s.events);
   return {
     label: shortLabel(milestone),
     number: milestone.number,
@@ -513,7 +536,8 @@ function referencePace(milestone: ScopeIssue, s: ScopeSummary): ReferencePace | 
   };
 }
 
-const ACTIVE: ForecastStatus[] = ['converging', 'not-converging', 'just-started', 'too-early', 'no-progress'];
+const IN_PROGRESS: ForecastStatus[] = ['converging', 'not-converging', 'just-started'];
+const ACTIVE: ForecastStatus[] = [...IN_PROGRESS, 'too-early', 'no-progress'];
 
 /** For an epic (several sub-issues that have their own sub-issues), one view per
  *  milestone; a combined forecast would mix finished, active, and unstarted work.
@@ -579,7 +603,8 @@ export function analyzeScope(t: ScopeTracking): ScopeAnalysis {
   }));
 
   const outsideLeaves = latestLeaves.filter(issue => !groupOf(issue, latest));
-  const defaultView = views.find(v => ACTIVE.includes(v.summary.status))
+  const defaultView = views.find(v => IN_PROGRESS.includes(v.summary.status))
+    ?? views.find(v => ACTIVE.includes(v.summary.status))
     ?? views.find(v => v.summary.status !== 'done')
     ?? views[0];
   return {
@@ -623,4 +648,259 @@ export function maxCreepForTarget(s: ScopeSummary, target: string): number | nul
   const weeksLeft = (parseDay(target) + DAY - Date.parse(s.asOf)) / WEEK;
   if (weeksLeft <= 0) return null;
   return s.pace.completionRate - s.remaining / weeksLeft;
+}
+
+/* ---------- GitHub history ---------- */
+
+export type HistoryEvent =
+  | { t: 'add' | 'remove'; at: string; id: string }
+  | { t: 'close'; at: string; reason: CloseReason }
+  | { t: 'reopen'; at: string }
+  | { t: 'unparent'; at: string; parent: { id: string; number: number; title: string } };
+
+export type HistoryIssue = {
+  id: string;
+  number: number;
+  title: string;
+  url: string;
+  createdAt: string;
+  state: 'open' | 'closed';
+  closeReason?: CloseReason;
+  closedAt?: string;
+  /** Current sub-issues, in GitHub's order. */
+  children: string[];
+  /** Sub-issues added and removed, closes and reopens, and moves away from other parents. */
+  events: HistoryEvent[];
+};
+
+/** GitHub's record of an issue tree, as fetched by the server. */
+export type ScopeHistory = {
+  fetchedAt: string;
+  /** The tracked issue. */
+  root: { id: string; number: number };
+  /** Top of the fetched tree: the tracked issue, or its parent epic for context. */
+  contextId: string;
+  issues: HistoryIssue[];
+  /** Current sub-issues the server's token can't read. */
+  unreadable: number;
+};
+
+/** Changes this close together are one observation, so moving an issue between
+ *  milestones reads as a move rather than a removal and a separate addition. */
+const SAME_CHANGE_MS = 60_000;
+/** A close reason changed this soon after closing replaces the original. */
+const REASON_FIX_MS = 10 * 60_000;
+
+type Membership = { parent: string; from: number; to: number; inferred: boolean };
+type StateChange = { at: number; state: 'open' | 'closed'; reason?: CloseReason };
+
+const countOf = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+/** Rebuilds snapshots from GitHub's history: a snapshot for each moment the tree
+ *  or an issue's state changed. Membership comes from "sub-issue added/removed"
+ *  records; when GitHub has none for a current sub-issue, it counts from the
+ *  issue's creation and a warning says so. */
+export function trackingFromHistory(
+  h: ScopeHistory,
+  checkedAt: string,
+  refreshError?: { at: string; message: string },
+): ScopeTracking {
+  const byId = new Map(h.issues.map(i => [i.id, i]));
+  const fetchedAt = Date.parse(h.fetchedAt);
+  const created = (id: string) => {
+    const issue = byId.get(id);
+    return issue ? Date.parse(issue.createdAt) : 0;
+  };
+  const at = (e: { at: string }) => Date.parse(e.at);
+
+  const memberships = new Map<string, Membership[]>();
+  const addMembership = (child: string, m: Membership) => {
+    const list = memberships.get(child) ?? [];
+    list.push(m);
+    memberships.set(child, list);
+  };
+  for (const p of h.issues) {
+    const open = new Map<string, number>();
+    const changes = p.events
+      .filter((e): e is Extract<HistoryEvent, { t: 'add' | 'remove' }> => e.t === 'add' || e.t === 'remove')
+      .sort((a, b) => at(a) - at(b));
+    for (const e of changes) {
+      if (e.t === 'add') {
+        if (!open.has(e.id)) open.set(e.id, at(e));
+        continue;
+      }
+      const from = open.get(e.id);
+      addMembership(e.id, {
+        parent: p.id,
+        from: from ?? Math.max(created(e.id), created(p.id)),
+        to: at(e),
+        inferred: from === undefined,
+      });
+      open.delete(e.id);
+    }
+    const current = new Set(p.children);
+    for (const [child, from] of open) {
+      // No longer a sub-issue but GitHub has no removal record: ends when observed.
+      addMembership(child, { parent: p.id, from, to: current.has(child) ? Infinity : fetchedAt, inferred: !current.has(child) });
+    }
+    for (const child of p.children) {
+      if (!open.has(child)) {
+        addMembership(child, { parent: p.id, from: Math.max(created(child), created(p.id)), to: Infinity, inferred: true });
+      }
+    }
+  }
+  // An issue has one parent at a time; trust the later record where they overlap.
+  for (const list of memberships.values()) {
+    list.sort((a, b) => a.from - b.from);
+    for (let i = 0; i + 1 < list.length; i++) list[i].to = Math.min(list[i].to, list[i + 1].from);
+  }
+
+  const states = new Map<string, StateChange[]>();
+  for (const issue of h.issues) {
+    const list: StateChange[] = [{ at: Date.parse(issue.createdAt), state: 'open' }];
+    const changes = issue.events
+      .filter(e => e.t === 'close' || e.t === 'reopen')
+      .sort((a, b) => at(a) - at(b));
+    for (const e of changes) {
+      const prev = list[list.length - 1];
+      if (e.t === 'close') {
+        if (prev.state === 'closed' && at(e) - prev.at <= REASON_FIX_MS) prev.reason = e.reason;
+        else list.push({ at: at(e), state: 'closed', reason: e.reason });
+      } else if (prev.state === 'closed') {
+        list.push({ at: at(e), state: 'open' });
+      }
+    }
+    const last = list[list.length - 1];
+    if (last.state !== issue.state || (issue.state === 'closed' && last.reason !== issue.closeReason)) {
+      // Where the history is incomplete, GitHub's current state wins.
+      const when = issue.state === 'closed' && issue.closedAt ? Date.parse(issue.closedAt) : fetchedAt;
+      list.push({ at: Math.max(when, last.at), state: issue.state, reason: issue.closeReason });
+    }
+    states.set(issue.id, list);
+  }
+  const stateAt = (id: string, t: number): StateChange => {
+    const list = states.get(id) ?? [];
+    for (let i = list.length - 1; i >= 0; i--) if (list[i].at <= t) return list[i];
+    return list[0] ?? { at: t, state: 'open' };
+  };
+
+  const movedFrom = (id: string, m: Membership): ScopeIssue['movedFrom'] => {
+    let found: ScopeIssue['movedFrom'];
+    for (const e of byId.get(id)?.events ?? []) {
+      if (e.t !== 'unparent' || e.parent.id === m.parent) continue;
+      const t = at(e);
+      if (t <= m.from + SAME_CHANGE_MS && t >= m.from - REASON_FIX_MS) found = { number: e.parent.number, title: e.parent.title };
+    }
+    return found;
+  };
+
+  // Children in GitHub's current order, then former children by when they joined.
+  const childrenOf = new Map<string, { child: string; m: Membership }[]>();
+  for (const [child, list] of memberships) {
+    for (const m of list) {
+      const entries = childrenOf.get(m.parent) ?? [];
+      entries.push({ child, m });
+      childrenOf.set(m.parent, entries);
+    }
+  }
+  for (const [parent, entries] of childrenOf) {
+    const order = byId.get(parent)?.children ?? [];
+    const rank = (id: string) => {
+      const i = order.indexOf(id);
+      return i === -1 ? order.length : i;
+    };
+    entries.sort((a, b) => rank(a.child) - rank(b.child) || a.m.from - b.m.from);
+  }
+
+  const times: number[] = [];
+  for (const list of memberships.values()) {
+    for (const m of list) {
+      times.push(m.from);
+      if (Number.isFinite(m.to)) times.push(m.to);
+    }
+  }
+  for (const list of states.values()) for (const s of list.slice(1)) times.push(s.at);
+  times.sort((a, b) => a - b);
+  const moments: number[] = [];
+  for (const t of times) {
+    if (!Number.isFinite(t)) continue;
+    if (moments.length > 0 && t - moments[moments.length - 1] <= SAME_CHANGE_MS) moments[moments.length - 1] = t;
+    else moments.push(t);
+  }
+
+  const cache = new Map<string, ScopeIssue>();
+  const issueAt = (info: HistoryIssue, parentId: string, s: StateChange, from: ScopeIssue['movedFrom']) => {
+    const key = `${info.id}|${parentId}|${s.state}|${s.reason ?? ''}|${from?.number ?? ''}`;
+    let issue = cache.get(key);
+    if (!issue) {
+      issue = {
+        id: info.id,
+        number: info.number,
+        title: info.title,
+        url: info.url,
+        parentId,
+        state: s.state,
+        ...(s.state === 'closed' ? { closeReason: s.reason ?? 'completed' } : {}),
+        ...(from ? { movedFrom: from } : {}),
+      };
+      cache.set(key, issue);
+    }
+    return issue;
+  };
+  const snapshots: ScopeSnapshot[] = moments.map(t => {
+    const issues: ScopeIssue[] = [];
+    const seen = new Set<string>();
+    const visit = (parentId: string, depth: number) => {
+      if (depth > 8) return;
+      for (const { child, m } of childrenOf.get(parentId) ?? []) {
+        const info = byId.get(child);
+        if (!info || seen.has(child) || m.from > t || m.to <= t) continue;
+        seen.add(child);
+        issues.push(issueAt(info, parentId, stateAt(child, t), movedFrom(child, m)));
+        visit(child, depth + 1);
+      }
+    };
+    visit(h.contextId, 0);
+    return { observedAt: new Date(t).toISOString(), issues };
+  });
+
+  // Notes only about the tracked issue's own sub-issues.
+  const currentParent = new Map<string, string>();
+  for (const [child, list] of memberships) {
+    const now = list.find(m => m.to === Infinity);
+    if (now) currentParent.set(child, now.parent);
+  }
+  const underRoot = (id: string) => {
+    let parent = currentParent.get(id);
+    for (let depth = 0; parent && depth < 32; depth++) {
+      if (parent === h.root.id) return true;
+      parent = currentParent.get(parent);
+    }
+    return false;
+  };
+  let undated = 0;
+  for (const [child, list] of memberships) {
+    if (list.some(m => m.inferred && m.to === Infinity) && byId.has(child) && underRoot(child)) undated++;
+  }
+  const warnings: string[] = [];
+  if (h.unreadable > 0) {
+    warnings.push(`${countOf(h.unreadable, "sub-issue isn't", "sub-issues aren't")} counted: the planner's GitHub access can't read ${h.unreadable === 1 ? 'it' : 'them'}.`);
+  }
+  if (undated > 0) {
+    warnings.push(`GitHub has no record of when ${countOf(undated, 'issue was', 'issues were')} added, so ${undated === 1 ? 'it counts' : 'they count'} from creation.`);
+  }
+
+  const tracking: ScopeTracking = {
+    source: 'github',
+    root: h.root,
+    snapshots,
+    checkedAt,
+    ...(refreshError ? { refreshError } : {}),
+    ...(warnings.length > 0 ? { warnings } : {}),
+  };
+  if (h.contextId !== h.root.id) {
+    const context = analyzeScope({ ...tracking, root: { id: h.contextId, number: 0 } });
+    tracking.reference = context.reference.filter(r => r.number !== h.root.number);
+  }
+  return tracking;
 }

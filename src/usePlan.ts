@@ -57,6 +57,12 @@ const writeToken = (slug: string, token: string | null) => {
   } catch {}
 };
 
+/** Authorization header carrying the plan's saved unlock token, if there is one. */
+export function planAuthHeaders(slug: string): Record<string, string> {
+  const token = readToken(slug);
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 export function usePlan(slug: string | null): UsePlan {
   const [state, setLocalState] = useState<PlanState | null>(null);
   const [conn, setConn] = useState<ConnState>('connecting');

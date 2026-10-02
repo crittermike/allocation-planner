@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { parseGitHubIssueUrl } from './scope';
-import { ScopePanel, scopeTrackingEnabled } from './ScopePanel';
+import { ScopePanel, scopeSourceFor } from './ScopePanel';
+import { useScopeConfig } from './scopeApi';
 import type { Person, Project } from './types';
 
 /** Chip-style EM values offered in the picker. Must stay in sync with the
@@ -221,6 +221,8 @@ export function ProjectEditModal(props: {
   onRemove: () => void;
   onClose: () => void;
   isNew?: boolean;
+  /** The plan's slug, for loading scope from the server. */
+  slug?: string;
   /** All projects in the plan, so milestones can show linked projects' release dates. */
   projects?: Project[];
 }) {
@@ -228,6 +230,7 @@ export function ProjectEditModal(props: {
   const swatchRef = useRef<HTMLButtonElement>(null);
   const [colorOpen, setColorOpen] = useState(false);
   const [colorRect, setColorRect] = useState<DOMRect | null>(null);
+  const scopeConfig = useScopeConfig();
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') props.onClose(); };
@@ -248,8 +251,8 @@ export function ProjectEditModal(props: {
   } else if (plannedEM === 0) {
     badgeClass = 'bg-transparent text-ink-400 border-transparent';
   }
-  // Projects linked to a GitHub issue get scope tracking automatically.
-  const trackedIssue = scopeTrackingEnabled ? parseGitHubIssueUrl(project.url) : null;
+  // Projects linked to a GitHub issue the planner can read get scope tracking automatically.
+  const tracked = props.slug ? scopeSourceFor(project.url, scopeConfig) : null;
 
   return (
     <div
@@ -259,7 +262,7 @@ export function ProjectEditModal(props: {
       <div
         className={
           'anim-pop-in w-full rounded-2xl border border-ink-200 bg-white shadow-2xl ' +
-          (trackedIssue ? 'max-w-[1200px] lg:grid lg:grid-cols-[512px_minmax(0,1fr)]' : 'max-w-lg')
+          (tracked ? 'max-w-[1200px] lg:grid lg:grid-cols-[512px_minmax(0,1fr)]' : 'max-w-lg')
         }
       >
         <div className="flex items-center justify-between gap-3 border-b border-ink-100 px-5 py-3.5 lg:col-span-2">
@@ -393,11 +396,13 @@ export function ProjectEditModal(props: {
             />
           </label>
         </div>
-        {trackedIssue && (
+        {tracked && props.slug && (
           <div className="min-w-0 border-t border-ink-100 px-5 py-5 lg:border-l lg:border-t-0">
             <ScopePanel
-              key={trackedIssue.url}
-              issue={trackedIssue}
+              key={tracked.issue.url}
+              slug={props.slug}
+              issue={tracked.issue}
+              source={tracked.source}
               releaseDate={project.releaseDate}
               projects={props.projects ?? []}
             />

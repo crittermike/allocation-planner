@@ -1,4 +1,4 @@
-import { useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   FORECAST_WINDOW_DAYS,
   HIGH_CREEP_RATIO,
@@ -10,8 +10,10 @@ import {
   isCreep,
   issueKey,
   maxCreepForTarget,
+  milestoneNames,
   parseGitHubIssueUrl,
   projectFinish,
+  trackingFromHistory,
   type FinishForecast,
   type ForecastStatus,
   type GitHubIssueRef,
@@ -25,11 +27,25 @@ import {
   type ScopeTracking,
   type ScopeView,
 } from './scope';
-import { DEMO_SCENARIOS, SCOPE_DEMO_ENABLED, demoScope, type DemoScenario } from './scopeDemo';
+import { requestScope, type ScopeConfig, type ScopeResponse } from './scopeApi';
+import { DEMO_SCENARIOS, demoScope, isDemoIssue, type DemoScenario } from './scopeDemo';
 import type { Project } from './types';
 
-/** Until the GitHub connector exists, the panel can only show demo data, so it's dev-only. */
-export const scopeTrackingEnabled = SCOPE_DEMO_ENABLED;
+export type ScopeSource = 'demo' | 'github';
+
+/** Where a project's scope comes from: demo data for the fictional demo issues (dev
+ *  builds only), GitHub for issues in repos the server can read, otherwise nowhere. */
+export function scopeSourceFor(
+  url: string | undefined,
+  config: ScopeConfig | null,
+): { issue: GitHubIssueRef; source: ScopeSource } | null {
+  const issue = parseGitHubIssueUrl(url);
+  if (!issue) return null;
+  if (import.meta.env.DEV && isDemoIssue(issue)) return { issue, source: 'demo' };
+  const repo = `${issue.owner}/${issue.repo}`.toLowerCase();
+  if (config?.enabled && (config.repos.length === 0 || config.repos.includes(repo))) return { issue, source: 'github' };
+  return null;
+}
 
 const MINUTE = 60_000;
 const DAY = 86_400_000;
@@ -94,7 +110,7 @@ const STATUS: Record<ForecastStatus, { label: string; headline?: string; tone: T
   'just-started': { label: 'Just started', tone: 'neutral' },
   'not-started': { label: 'Not started', tone: 'neutral' },
   'too-early': { label: 'Too early', headline: 'Too early to forecast', tone: 'neutral' },
-  'no-progress': { label: 'No recent progress', tone: 'neutral' },
+  'no-progress': { label: 'No progress', headline: 'No recent progress', tone: 'neutral' },
   done: { label: 'Done', headline: 'All issues are done', tone: 'good' },
   empty: { label: 'No sub-issues', headline: 'No sub-issues yet', tone: 'neutral' },
 };
@@ -180,25 +196,57 @@ function versusTarget(f: FinishForecast | null, target: Target | null): { text: 
 
 /* ---------- panel ---------- */
 
+type PanelProps = {
+  slug: string;
+  issue: GitHubIssueRef;
+  source: ScopeSource;
+  releaseDate?: string;
+  projects: Project[];
+};
+
+export function ScopePanel(props: PanelProps) {
+  return import.meta.env.DEV && props.source === 'demo' ? <DemoScope {...props} /> : <GitHubScope {...props} />;
+}
+
+function PanelFrame({ status, aside, children }: { status?: ReactNode; aside?: ReactNode; children: ReactNode }) {
+  const headingId = useId();
+  return (
+    <section aria-labelledby={headingId} className="flex flex-col gap-4">
+      <div className="flex min-h-6 flex-wrap items-center gap-x-3 gap-y-1.5">
+        <h3 id={headingId} className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-500">Scope</h3>
+        {status}
+        <span className="flex-1" />
+        {aside}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function Unreadable({ issue, at }: { issue: GitHubIssueRef; at: string }) {
+  return (
+    <div className="rounded-lg border border-rose-200 bg-rose-50 px-3.5 py-3 text-[12.5px] text-rose-700">
+      <div className="font-semibold">Can't read {issue.owner}/{issue.repo}#{issue.number}</div>
+      <p className="mt-1 leading-relaxed">
+        The planner's GitHub access doesn't cover this repo, or the issue doesn't exist. Scope shows up
+        automatically once the issue can be read. Last tried {ago(Date.parse(at))}.
+      </p>
+    </div>
+  );
+}
+
 /** Demo scenario picked per URL, kept while the page is open. */
 const chosenScenarios = new Map<string, DemoScenario>();
 
-export function ScopePanel({ issue, releaseDate, projects }: {
-  issue: GitHubIssueRef;
-  releaseDate?: string;
-  projects: Project[];
-}) {
-  const headingId = useId();
+function DemoScope({ issue, releaseDate, projects }: PanelProps) {
   const [scenario, setScenario] = useState<DemoScenario>(() => chosenScenarios.get(issue.url) ?? 'normal');
   const load = useMemo(() => demoScope(issue, scenario), [issue.url, scenario]);
-  const tracking = load.status === 'ready' ? load.tracking : null;
-
   return (
-    <section aria-labelledby={headingId} className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-        <h3 id={headingId} className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-500">Scope</h3>
-        {tracking && <span className="text-[11.5px] text-ink-500">Updated {ago(Date.parse(tracking.checkedAt))}</span>}
-        <span className="flex-1" />
+    <PanelFrame
+      status={load.status === 'ready' && (
+        <span className="text-[11.5px] text-ink-500">Updated {ago(Date.parse(load.tracking.checkedAt))}</span>
+      )}
+      aside={
         <label
           className="inline-flex items-center gap-1.5 rounded-full border border-amber-100 bg-amber-50 py-0.5 pl-2.5 pr-0.5 text-[11px] font-semibold text-amber-800"
           title="Fictional data for prototyping. Nothing here comes from GitHub."
@@ -218,25 +266,100 @@ export function ScopePanel({ issue, releaseDate, projects }: {
             ))}
           </select>
         </label>
-      </div>
+      }
+    >
       {load.status === 'unreadable' ? (
-        <div className="rounded-lg border border-rose-200 bg-rose-50 px-3.5 py-3 text-[12.5px] text-rose-700">
-          <div className="font-semibold">Can't read {issue.owner}/{issue.repo}#{issue.number}</div>
-          <p className="mt-1 leading-relaxed">
-            The planner's GitHub access doesn't cover this repo, or the issue doesn't exist. Scope shows up
-            automatically once the issue can be read. Last tried {ago(Date.parse(load.at))}.
-          </p>
-        </div>
+        <Unreadable issue={issue} at={load.at} />
       ) : (
-        <ScopeDetails
-          key={scenario}
-          tracking={load.tracking}
-          issue={issue}
-          releaseDate={releaseDate}
-          projects={projects}
-        />
+        <ScopeDetails key={scenario} tracking={load.tracking} issue={issue} releaseDate={releaseDate} projects={projects} />
       )}
-    </section>
+    </PanelFrame>
+  );
+}
+
+/** Wait for the URL to settle, so typing an issue URL doesn't load every partial number. */
+const URL_SETTLE_MS = 700;
+const POLL_MS = 4000;
+const MAX_POLLS = 15;
+
+function GitHubScope({ slug, issue, releaseDate, projects }: PanelProps) {
+  const [response, setResponse] = useState<ScopeResponse | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    let timer: number | undefined;
+    let polls = 0;
+    let retried = false;
+    const load = async () => {
+      const res = await requestScope(slug, issue.url);
+      if (!alive) return;
+      setResponse(res);
+      if (res.status === 'error' && res.code === 403 && !retried) {
+        // A URL edited moments ago may not be saved to the plan yet.
+        retried = true;
+        timer = window.setTimeout(load, 1500);
+      } else if (res.status === 'ready' && res.refreshing && polls++ < MAX_POLLS) {
+        timer = window.setTimeout(load, POLL_MS);
+      }
+    };
+    timer = window.setTimeout(load, URL_SETTLE_MS);
+    return () => {
+      alive = false;
+      window.clearTimeout(timer);
+    };
+  }, [slug, issue.url]);
+
+  const refresh = async () => {
+    setRefreshing(true);
+    const res = await requestScope(slug, issue.url, true);
+    setResponse(res);
+    setRefreshing(false);
+  };
+
+  const tracking = useMemo(
+    () => (response?.status === 'ready'
+      ? trackingFromHistory(response.history, response.checkedAt, response.refreshError ?? undefined)
+      : null),
+    [response],
+  );
+  const busy = refreshing || (response?.status === 'ready' && response.refreshing);
+
+  return (
+    <PanelFrame
+      status={response?.status === 'ready' && (
+        <button
+          type="button"
+          onClick={refresh}
+          disabled={busy}
+          title="Refresh from GitHub"
+          className="inline-flex items-center gap-1 rounded text-[11.5px] text-ink-500 transition hover:text-ink-800 disabled:cursor-progress"
+        >
+          <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden className={busy ? 'animate-spin' : ''}>
+            <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9" />
+            <path d="M13.5 2.5v3h-3" />
+          </svg>
+          {busy ? 'Refreshing…' : `Updated ${ago(Date.parse(response.checkedAt))}`}
+        </button>
+      )}
+    >
+      {!response && (
+        <p className="animate-pulse text-[12.5px] text-ink-500">Loading from GitHub… The first load can take a few seconds.</p>
+      )}
+      {response?.status === 'unreadable' && <Unreadable issue={issue} at={response.at} />}
+      {response?.status === 'error' && (
+        <div className="rounded-lg border border-rose-200 bg-rose-50 px-3.5 py-3 text-[12.5px] text-rose-700">
+          <div className="font-semibold">Couldn't load scope from GitHub</div>
+          <p className="mt-1 leading-relaxed">{response.message}</p>
+          {response.code === undefined && (
+            <button type="button" onClick={refresh} disabled={busy} className="mt-1.5 font-medium underline disabled:opacity-60">
+              {busy ? 'Trying again…' : 'Try again'}
+            </button>
+          )}
+        </div>
+      )}
+      {tracking && <ScopeDetails tracking={tracking} issue={issue} releaseDate={releaseDate} projects={projects} />}
+    </PanelFrame>
   );
 }
 
@@ -248,6 +371,10 @@ function ScopeDetails({ tracking, issue, releaseDate, projects }: {
 }) {
   const analysis = useMemo(() => analyzeScope(tracking), [tracking]);
   const [viewId, setViewId] = useState(analysis.defaultViewId);
+  const names = useMemo(() => {
+    const short = analysis.hasBreakdown ? milestoneNames(analysis.views.map(v => v.label)) : [];
+    return new Map(analysis.views.map((v, i) => [v.id, short[i] ?? v.label]));
+  }, [analysis]);
   // Milestones get their release date from the planner project linked to them.
   const releaseByIssue = useMemo(() => {
     const out = new Map<string, { date: string; name: string }>();
@@ -259,7 +386,7 @@ function ScopeDetails({ tracking, issue, releaseDate, projects }: {
   }, [projects]);
 
   const view = analysis.views.find(v => v.id === viewId) ?? analysis.views[0];
-  if (!view) return <p className="text-[12.5px] text-ink-500">Waiting for data from GitHub…</p>;
+  if (!view) return <p className="text-[12.5px] text-ink-500">No sub-issues found.</p>;
 
   const targetFor = (v: ScopeView): Target | null => {
     if (!analysis.hasBreakdown) return releaseDate ? { date: releaseDate, source: "this project's release date" } : null;
@@ -277,12 +404,16 @@ function ScopeDetails({ tracking, issue, releaseDate, projects }: {
           {fmtWhen(Date.parse(tracking.checkedAt))}.
         </div>
       )}
+      {tracking.warnings?.map(w => (
+        <p key={w} className="-mt-1 text-[11.5px] leading-relaxed text-amber-800">{w}</p>
+      ))}
       {analysis.hasBreakdown && (
-        <MilestoneTable analysis={analysis} selectedId={view.id} onSelect={setViewId} targetFor={targetFor} />
+        <MilestoneTable analysis={analysis} names={names} selectedId={view.id} onSelect={setViewId} targetFor={targetFor} />
       )}
       <MilestoneDetail
         key={view.id}
         view={view}
+        name={names.get(view.id) ?? view.label}
         target={targetFor(view)}
         showHeading={analysis.hasBreakdown}
         rootNumber={issue.number}
@@ -294,8 +425,9 @@ function ScopeDetails({ tracking, issue, releaseDate, projects }: {
 
 /* ---------- epic: milestone table ---------- */
 
-function MilestoneTable({ analysis, selectedId, onSelect, targetFor }: {
+function MilestoneTable({ analysis, names, selectedId, onSelect, targetFor }: {
   analysis: ScopeAnalysis;
+  names: Map<string, string>;
   selectedId: string;
   onSelect: (id: string) => void;
   targetFor: (v: ScopeView) => Target | null;
@@ -334,9 +466,10 @@ function MilestoneTable({ analysis, selectedId, onSelect, targetFor }: {
                       type="button"
                       aria-pressed={selected}
                       onClick={e => { e.stopPropagation(); onSelect(v.id); }}
+                      title={v.label}
                       className="block w-full truncate text-left text-ink-800 outline-none focus-visible:underline"
                     >
-                      {v.label}
+                      {names.get(v.id) ?? v.label}
                     </button>
                   </td>
                   <td className="px-2 py-1.5"><Progress done={v.summary.current.completed} total={v.summary.current.scope} /></td>
@@ -439,8 +572,9 @@ function StatusPill({ status }: { status: ForecastStatus }) {
 
 /* ---------- milestone detail ---------- */
 
-function MilestoneDetail({ view, target, showHeading, rootNumber, demo }: {
+function MilestoneDetail({ view, name, target, showHeading, rootNumber, demo }: {
   view: ScopeView;
+  name: string;
   target: Target | null;
   showHeading: boolean;
   rootNumber: number;
@@ -455,7 +589,7 @@ function MilestoneDetail({ view, target, showHeading, rootNumber, demo }: {
     <div className="flex flex-col gap-4">
       {showHeading && view.issue && (
         <div className="-mb-2 flex min-w-0 items-baseline gap-2 border-t border-ink-100 pt-4">
-          <h4 className="min-w-0 truncate text-[13px] font-semibold text-ink-700">{view.label}</h4>
+          <h4 className="min-w-0 truncate text-[13px] font-semibold text-ink-700" title={view.label}>{name}</h4>
           <IssueNumberLink issue={view.issue} demo={demo} />
         </div>
       )}

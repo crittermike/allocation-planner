@@ -13,6 +13,7 @@ Not really a Gantt chart (no time-spanning bars, no dependencies) — it's a cap
 - Two-week iterations with auto-computed working-week labels
 - Drag-and-drop or click-to-pick assignment
 - Estimated vs. planned eng-week tracking per project
+- Scope tracking for projects linked to GitHub issues: milestones, scope creep, and finish forecasts (optional; needs a GitHub token)
 - No login or auth (anyone with the link can view and edit)
 
 ## Stack
@@ -58,6 +59,29 @@ fly deploy
 ```
 
 Cost: ~$2-3/month for a `shared-cpu-1x` 256MB machine + 1GB volume, kept warm for snappy WebSocket reconnects (`min_machines_running = 1` in `fly.toml`). Set it to `0` to scale to zero (sleeps when idle, wakes on first request — saves money but adds a cold-start delay).
+
+## GitHub scope tracking
+
+When a project's URL is a GitHub issue that the server can read, the project editor shows how its scope changed over time: work finished, new issues added after work started (scope creep), and when the remaining work should finish at none, the current, or double the creep rate. For an epic whose sub-issues are milestones, it shows one row per milestone. A milestone's target is the release date of the project linked to that milestone's issue.
+
+History comes from GitHub's record of sub-issues being added, removed, closed, and reopened, so a newly linked issue shows its full history right away. Counting rules:
+
+- Only sub-issues without sub-issues of their own count, so parent issues aren't counted twice.
+- Closed as completed counts as finished. Closed as not planned or duplicate, or removed, reduces scope instead.
+- Work starts when the first issue is finished. New issues before that are planning, not creep. Splits and moves between milestones aren't creep either.
+
+To turn it on, give the server a GitHub token:
+
+| Variable | Purpose |
+|---|---|
+| `GITHUB_TOKEN` | Fine-grained personal access token with read-only **Issues** access to the repos you track. Without it, the feature is off. |
+| `GITHUB_SCOPE_REPOS` | Optional comma-separated allowlist, e.g. `github/security-products-enablement`. Issues in other repos are ignored. |
+
+Locally, put them in `.env` at the repo root (it's gitignored) and restart `npm run dev`. On Fly.io, use `fly secrets set GITHUB_TOKEN=… GITHUB_SCOPE_REPOS=…`.
+
+The server only reads issues that the plan links to, using the plan's password check if it has one. Anyone who can open a plan can see the scope, including issue titles, for the issues it links to, so password-protect plans that link private issues. The last complete result per issue is cached in SQLite and refreshed in the background after 15 minutes; click "Updated … ago" to refresh now. A failed refresh keeps the last good data and says so.
+
+Dev builds also show fictional demo data for `acme-demo/invoice-exports` issue URLs, for working on the UI without a token.
 
 ## Data model
 
