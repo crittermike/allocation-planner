@@ -5,16 +5,17 @@
  * Every issue, title, and date here is fictional and generated relative to
  * today. Nothing is read from GitHub. Demo data is only available in dev
  * builds so it can never appear next to real plans in production.
+ *
+ * One fictional epic (#700) with milestones #701–#706. A project linked to the
+ * epic shows the milestone table; a project linked to a milestone shows that
+ * milestone on its own, from the same history.
  */
-import type { GitHubIssueRef, ScopeIssue, ScopeLoad, ScopeSnapshot, ScopeTracking } from './scope';
+import { analyzeScope, type GitHubIssueRef, type ScopeIssue, type ScopeLoad, type ScopeSnapshot, type ScopeTracking } from './scope';
 
 export const SCOPE_DEMO_ENABLED = import.meta.env.DEV;
 
 export const DEMO_SCENARIOS = [
-  { id: 'epic', label: 'Epic with milestones' },
-  { id: 'converging', label: 'Converging' },
-  { id: 'outpacing', label: 'Scope outpacing completion' },
-  { id: 'first-snapshot', label: 'First snapshot' },
+  { id: 'normal', label: 'Normal' },
   { id: 'stale', label: 'Refresh failing' },
   { id: 'unreadable', label: 'Issue not readable' },
   { id: 'empty', label: 'No sub-issues' },
@@ -22,14 +23,15 @@ export const DEMO_SCENARIOS = [
 
 export type DemoScenario = (typeof DEMO_SCENARIOS)[number]['id'];
 
-/** Deterministic default so different projects open in different states. */
-export const defaultDemoScenario = (ref: GitHubIssueRef): DemoScenario =>
-  DEMO_SCENARIOS[ref.number % DEMO_SCENARIOS.length].id;
-
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
+const HISTORY_DAYS = 112;
 const DEMO_ISSUE_URL = 'https://github.com/acme-demo/invoice-exports/issues/';
+const EPIC = 700;
+const MILESTONES = [701, 702, 703, 704, 705, 706];
+/** Other issue numbers show one of these, so any GitHub issue URL gets demo data. */
+const FALLBACKS = [EPIC, 703, 704, 705, 706];
 
 const M1 = [
   'Export job model and migrations', 'CSV writer for invoice rows', 'Store export files in blob storage',
@@ -44,9 +46,12 @@ const M3 = [
   'Schedule model (daily, weekly, monthly)', 'Scheduler loop with leader election', 'Timezone-aware schedule times',
   'UI to create and edit schedules', 'Pause schedules for suspended accounts', 'Skip runs when nothing changed',
   'Deliver scheduled exports to S3', 'Deliver scheduled exports by email', 'Schedule run history page',
-  'Alert on missed schedule runs', 'API for managing schedules', 'Docs for scheduled exports',
+  'API for managing schedules', 'Alert on missed schedule runs', 'Docs for scheduled exports',
 ];
-const M3_NEW = ['Handle DST transitions in schedules', 'Limit schedules per account', 'Retry failed scheduled deliveries'];
+const M3_NEW = [
+  'Handle DST transitions in schedules', 'Limit schedules per account', 'Retry failed scheduled deliveries',
+  'Validate cron expressions',
+];
 const M4 = [
   'Add account_id to export jobs', 'Batch exports by account', 'Paginate account list for large customers',
   'Per-account rate limiting', 'Retry failed account exports', 'Merge per-account files into one archive',
@@ -66,11 +71,11 @@ const M4_NEW = [
 const M4_SPLIT = ['Classify transient vs. permanent errors', 'Persist retry attempt history', 'Show retry state in the UI'];
 const M5 = [
   'Retention policy settings', 'Delete expired export files', 'Retention audit events',
-  'Admin override for legal holds', 'Retention docs',
+  'Admin override for legal holds', 'Retention settings API', 'Retention docs',
 ];
-const M5_NEW = ['Backfill retention for existing exports'];
 const M6 = ['Reduce export worker memory', 'Structured logging for export jobs', 'Chaos test worker restarts'];
-const M6_NEW = ['Tune archive compression', 'Dashboards for retention jobs'];
+
+type AddOptions = { closed?: boolean; number?: number; before?: string };
 
 /** Scripted sub-issue tree that records a snapshot whenever a day's changes land. */
 class DemoTree {
@@ -99,29 +104,25 @@ class DemoTree {
     this.dirty = false;
   }
 
-  idOf(key: string) {
-    return this.get(key).id;
-  }
-
-  add(key: string, title: string, parent?: string, opts: { closed?: boolean; after?: string } = {}) {
-    const number = this.nextNumber++;
+  add(key: string, title: string, parent?: string, opts: AddOptions = {}) {
+    const number = opts.number ?? this.nextNumber++;
     this.issues.set(key, {
       id: `demo-${number}`,
       number,
       title,
       url: DEMO_ISSUE_URL + number,
-      parentId: parent ? this.idOf(parent) : this.rootId,
+      parentId: parent ? this.get(parent).id : this.rootId,
       state: opts.closed ? 'closed' : 'open',
       ...(opts.closed ? { closeReason: 'completed' as const } : {}),
     });
-    const at = opts.after ? this.order.indexOf(opts.after) + 1 : this.order.length;
+    const at = opts.before ? this.order.indexOf(opts.before) : this.order.length;
     this.order.splice(at, 0, key);
     this.dirty = true;
     return this;
   }
 
-  addAll(parent: string, titles: readonly string[], closedCount = 0) {
-    titles.forEach((title, i) => this.add(`${parent}.${i}`, title, parent, { closed: i < closedCount }));
+  addAll(parent: string, titles: readonly string[]) {
+    titles.forEach((title, i) => this.add(`${parent}.${i}`, title, parent));
     return this;
   }
 
@@ -139,7 +140,16 @@ class DemoTree {
   }
 
   move(key: string, parent: string) {
-    return this.update(key, { parentId: this.idOf(parent) });
+    const from = this.issues.get(this.keyOfId(this.get(key).parentId) ?? '');
+    return this.update(key, {
+      parentId: this.get(parent).id,
+      movedFrom: from ? { number: from.number, title: from.title } : undefined,
+    });
+  }
+
+  private keyOfId(id: string) {
+    for (const [key, issue] of this.issues) if (issue.id === id) return key;
+    return undefined;
   }
 
   private get(key: string) {
@@ -155,117 +165,120 @@ class DemoTree {
   }
 }
 
-/** Six weeks of a fictional epic: M1–M2 finished, M3 converging, M4 growing
- *  faster than it's completed (with spillover moved to M6), M5 added late. */
+/** Sixteen weeks of a fictional epic: M1–M2 finished, M3 converging but tight on
+ *  its date, M4 growing faster than it's finished (deferring some work to M6),
+ *  M5 just started, and M6 not started. */
 function epicTree(now: number): DemoTree {
   const today = new Date(now);
   today.setHours(0, 0, 0, 0);
-  const t = new DemoTree('demo-700', today.getTime() - 42 * DAY, 701);
+  const t = new DemoTree(`demo-${EPIC}`, today.getTime() - HISTORY_DAYS * DAY, 710);
   t.day(0, 9)
-    .add('m1', 'M1: Export foundations').addAll('m1', M1, M1.length)
-    .add('m2', 'M2: Async export worker').addAll('m2', M2, 6)
-    .add('m3', 'M3: Scheduled exports').addAll('m3', M3, 1)
-    .add('m4', 'M4: Multi-account exports').addAll('m4', M4)
-    .add('m6', 'M6: Hardening & follow-ups').addAll('m6', M6)
     .add('planning', 'Epic planning', undefined, { closed: true })
+    .add('m1', 'M1: Export foundations', undefined, { number: 701 }).addAll('m1', M1)
+    .add('m6', 'M6: Hardening & follow-ups', undefined, { number: 706 }).addAll('m6', M6)
     .add('wrapup', 'Epic wrap-up');
-  t.day(2).close('m3.1');
-  t.day(3).close('m2.6').add('m4.n0', M4_NEW[0], 'm4');
-  t.day(5).close('m3.2', 'm4.0');
-  t.day(7).close('m2.7').add('m4.n1', M4_NEW[1], 'm4');
-  t.day(9).close('m3.3').add('m3.n0', M3_NEW[0], 'm3');
-  t.day(10).close('m4.1').add('m4.n2', M4_NEW[2], 'm4');
-  t.day(12).close('m2.8', 'm3.4');
-  t.day(15).close('m4.2').add('m4.n3', M4_NEW[3], 'm4').add('m4.n4', M4_NEW[4], 'm4');
-  t.day(16).close('m3.5');
-  t.day(17).drop('m3.10');
-  t.day(18).move('m4.13', 'm6');
-  t.day(19).close('m3.6', 'm6.0').add('m4.n5', M4_NEW[5], 'm4');
-  t.day(21).close('m4.3').add('m4.n6', M4_NEW[6], 'm4');
-  t.day(22).close('m3.7');
-  t.day(23).reopen('m3.5');
-  t.day(24).add('m4.n7', M4_NEW[7], 'm4').add('m4.n8', M4_NEW[8], 'm4').drop('m4.9', 'duplicate');
-  t.day(25).close('m3.5').add('m3.n1', M3_NEW[1], 'm3');
-  t.day(26).add('m4.s0', M4_SPLIT[0], 'm4.4').add('m4.s1', M4_SPLIT[1], 'm4.4').add('m4.s2', M4_SPLIT[2], 'm4.4');
-  t.day(27).close('m3.8', 'm4.n1');
-  t.day(28).close('m4.5').add('m4.n9', M4_NEW[9], 'm4');
-  t.day(30).move('m4.n7', 'm6').move('m4.n9', 'm6').add('m6.n0', M6_NEW[0], 'm6');
-  t.day(31).add('m5', 'M5: Export retention', undefined, { after: 'm4' }).addAll('m5', M5).close('m3.9');
-  t.day(32).close('m4.6').add('m4.n10', M4_NEW[10], 'm4').add('m4.n11', M4_NEW[11], 'm4');
-  t.day(33).close('m3.n0');
-  t.day(34).reopen('m4.5');
-  t.day(35).close('m4.7').add('m4.n12', M4_NEW[12], 'm4');
-  t.day(36).add('m5.n0', M5_NEW[0], 'm5').add('m3.n2', M3_NEW[2], 'm3');
-  t.day(37).move('m4.n10', 'm6').add('m6.n1', M6_NEW[1], 'm6');
-  t.day(38).close('m4.5');
-  t.day(39).close('m5.0').add('m4.n13', M4_NEW[13], 'm4').add('m4.n14', M4_NEW[14], 'm4');
-  t.day(40, 11).close('m4.n0').add('m4.n15', M4_NEW[15], 'm4');
+  t.day(3).close('m1.0');
+  t.day(8).close('m1.1');
+  t.day(12).add('m1.n0', 'Handle exports with no invoices', 'm1');
+  t.day(14).close('m1.2');
+  t.day(19).close('m1.3');
+  t.day(21).add('m2', 'M2: Async export worker', undefined, { number: 702, before: 'm6' }).addAll('m2', M2);
+  t.day(23).close('m1.n0');
+  t.day(27).close('m1.4');
+  t.day(29).close('m2.0');
+  t.day(31).close('m1.5');
+  t.day(33).close('m2.1');
+  t.day(35).add('m2.n0', 'Handle worker crashes mid-export', 'm2');
+  t.day(36).close('m2.2');
+  t.day(40).close('m2.3');
+  t.day(43).close('m2.4');
+  t.day(44).add('m2.n1', 'Rate-limit retries per account', 'm2');
+  t.day(47).close('m2.5');
+  t.day(50).close('m2.6').add('m3', 'M3: Scheduled exports', undefined, { number: 703, before: 'm6' }).addAll('m3', M3);
+  t.day(53).close('m2.n0');
+  t.day(55).close('m2.7');
+  t.day(58).close('m2.8');
+  t.day(61).close('m2.n1');
+  t.day(64).close('m3.0');
+  t.day(68).close('m3.1');
+  t.day(70).add('m4', 'M4: Multi-account exports', undefined, { number: 704, before: 'm6' }).addAll('m4', M4);
+  t.day(73).add('m3.n0', M3_NEW[0], 'm3');
+  t.day(76).close('m3.2');
+  t.day(78).add('m3.n3', M3_NEW[3], 'm3');
+  t.day(80).close('m3.3', 'm4.0');
+  t.day(82).add('m4.n0', M4_NEW[0], 'm4');
+  t.day(85).close('m4.1').add('m4.n1', M4_NEW[1], 'm4');
+  t.day(86).close('m3.4');
+  t.day(87).add('m4.n2', M4_NEW[2], 'm4');
+  t.day(88).close('m4.2');
+  t.day(89).close('m3.5');
+  t.day(90).add('m3.n1', M3_NEW[1], 'm3').add('m4.n3', M4_NEW[3], 'm4');
+  t.day(91).move('m4.13', 'm6');
+  t.day(92).close('m4.3').add('m4.n5', M4_NEW[5], 'm4');
+  t.day(93).close('m3.6');
+  t.day(94).add('m4.n6', M4_NEW[6], 'm4').drop('m4.9', 'duplicate');
+  t.day(95).drop('m3.10')
+    .add('m4.s0', M4_SPLIT[0], 'm4.4').add('m4.s1', M4_SPLIT[1], 'm4.4').add('m4.s2', M4_SPLIT[2], 'm4.4');
+  t.day(96).close('m4.n1').add('m4.n7', M4_NEW[7], 'm4').add('m6.n0', 'Tune archive compression', 'm6');
+  t.day(97).reopen('m3.6');
+  t.day(98).close('m4.5').add('m5', 'M5: Export retention', undefined, { number: 705, before: 'm6' }).addAll('m5', M5);
+  t.day(99).close('m3.6', 'm3.7').add('m4.n8', M4_NEW[8], 'm4');
+  t.day(100).move('m4.n7', 'm6').add('m4.n9', M4_NEW[9], 'm4');
+  t.day(101).add('m3.n2', M3_NEW[2], 'm3');
+  t.day(102).move('m4.n9', 'm6');
+  t.day(103).reopen('m4.5').add('m4.n10', M4_NEW[10], 'm4');
+  t.day(104).close('m3.8', 'm4.7');
+  t.day(105).close('m5.0').add('m4.n11', M4_NEW[11], 'm4');
+  t.day(106).close('m4.5').move('m4.n10', 'm6');
+  t.day(107).add('m6.n1', 'Dashboards for retention jobs', 'm6');
+  t.day(108).close('m3.n0', 'm4.n0', 'm5.1');
+  t.day(109).add('m4.n13', M4_NEW[13], 'm4').add('m5.n0', 'Backfill retention for existing exports', 'm5');
+  t.day(111).add('m4.n15', M4_NEW[15], 'm4');
   t.flush();
   return t;
 }
 
-/** Track one milestone of the epic directly, as if the project URL pointed at it. */
-function subtree(snapshots: ScopeSnapshot[], rootId: string): ScopeSnapshot[] {
-  const out: ScopeSnapshot[] = [];
-  let previous = '';
-  for (const s of snapshots) {
-    const byId = new Map(s.issues.map(i => [i.id, i]));
-    if (!byId.has(rootId)) continue;
-    const inside = s.issues.filter(issue => {
-      let cur: ScopeIssue | undefined = issue;
-      for (let depth = 0; cur && depth < 32; depth++) {
-        if (cur.parentId === rootId) return true;
-        cur = byId.get(cur.parentId);
-      }
-      return false;
-    });
-    const key = JSON.stringify(inside);
-    if (key === previous) continue;
-    previous = key;
-    out.push({ observedAt: s.observedAt, issues: inside });
-  }
-  return out;
-}
-
 export function demoScope(ref: GitHubIssueRef, scenario: DemoScenario, now = Date.now()): ScopeLoad {
   const iso = (ms: number) => new Date(ms).toISOString();
-  const checkedAt = iso(now - 12 * MINUTE);
-  const ready = (rootId: string, snapshots: ScopeSnapshot[], extra: Partial<ScopeTracking> = {}): ScopeLoad => ({
-    status: 'ready',
-    tracking: { source: 'demo', root: { id: rootId, number: ref.number }, snapshots, checkedAt, ...extra },
-  });
-
   if (scenario === 'unreadable') return { status: 'unreadable', at: iso(now - 3 * MINUTE) };
-  if (scenario === 'empty') return ready('demo-root', [{ observedAt: iso(now - 2 * DAY), issues: [] }]);
-
-  const epic = epicTree(now);
-  const milestone = (key: string) => {
-    const id = epic.idOf(key);
-    return { id, snapshots: subtree(epic.snapshots, id) };
-  };
-  switch (scenario) {
-    case 'epic':
-      return ready(epic.rootId, epic.snapshots);
-    case 'converging': {
-      const m = milestone('m3');
-      return ready(m.id, m.snapshots);
-    }
-    case 'outpacing': {
-      const m = milestone('m4');
-      return ready(m.id, m.snapshots);
-    }
-    case 'first-snapshot': {
-      const m = milestone('m5');
-      const observedAt = iso(now - 5 * MINUTE);
-      return ready(m.id, [{ observedAt, issues: m.snapshots[0].issues }], { checkedAt: observedAt });
-    }
-    case 'stale': {
-      const m = milestone('m3');
-      const lastGood = now - 3 * DAY;
-      return ready(m.id, m.snapshots.filter(s => Date.parse(s.observedAt) <= lastGood), {
-        checkedAt: iso(lastGood),
-        refreshError: { at: iso(now - 20 * MINUTE), message: 'GitHub API rate limit exceeded' },
-      });
-    }
+  const checkedAt = iso(now - 12 * MINUTE);
+  if (scenario === 'empty') {
+    return {
+      status: 'ready',
+      tracking: {
+        source: 'demo',
+        root: { id: `demo-empty-${ref.number}`, number: ref.number },
+        snapshots: [{ observedAt: iso(now - 2 * DAY), issues: [] }],
+        checkedAt,
+      },
+    };
   }
+
+  const tree = epicTree(now);
+  const epic: ScopeTracking = {
+    source: 'demo',
+    root: { id: tree.rootId, number: ref.number },
+    snapshots: tree.snapshots,
+    checkedAt,
+  };
+  const number = ref.number === EPIC || MILESTONES.includes(ref.number)
+    ? ref.number
+    : FALLBACKS[ref.number % FALLBACKS.length];
+  let tracking = epic;
+  if (number !== EPIC) {
+    // One milestone on its own. The rest of the epic stays in the snapshots as
+    // context for moves; finished siblings set the pace for early estimates.
+    const reference = analyzeScope(epic).reference.filter(r => r.number !== number);
+    tracking = { ...epic, root: { id: `demo-${number}`, number: ref.number }, reference };
+  }
+  if (scenario === 'stale') {
+    const lastGood = now - 3 * DAY;
+    tracking = {
+      ...tracking,
+      snapshots: tracking.snapshots.filter(s => Date.parse(s.observedAt) <= lastGood),
+      checkedAt: iso(lastGood),
+      refreshError: { at: iso(now - 20 * MINUTE), message: 'GitHub API rate limit exceeded' },
+    };
+  }
+  return { status: 'ready', tracking };
 }

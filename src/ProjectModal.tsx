@@ -221,6 +221,8 @@ export function ProjectEditModal(props: {
   onRemove: () => void;
   onClose: () => void;
   isNew?: boolean;
+  /** All projects in the plan, so milestones can show linked projects' release dates. */
+  projects?: Project[];
 }) {
   const { project, planned, weeksPerEM } = props;
   const swatchRef = useRef<HTMLButtonElement>(null);
@@ -393,7 +395,12 @@ export function ProjectEditModal(props: {
         </div>
         {trackedIssue && (
           <div className="min-w-0 border-t border-ink-100 px-5 py-5 lg:border-l lg:border-t-0">
-            <ScopePanel key={trackedIssue.url} issue={trackedIssue} releaseDate={project.releaseDate} />
+            <ScopePanel
+              key={trackedIssue.url}
+              issue={trackedIssue}
+              releaseDate={project.releaseDate}
+              projects={props.projects ?? []}
+            />
           </div>
         )}
         <div className="flex items-center justify-between gap-2 border-t border-ink-100 bg-ink-50/40 px-5 py-3 lg:col-span-2">
