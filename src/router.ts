@@ -21,3 +21,15 @@ export function navigate(path: string) {
     window.dispatchEvent(new Event('app-navigate'));
   }
 }
+
+export function searchParam(name: string): string | null {
+  return new URLSearchParams(window.location.search).get(name);
+}
+
+/** Updates one query parameter in place, without adding a history entry. */
+export function replaceSearchParam(name: string, value: string | null) {
+  const url = new URL(window.location.href);
+  if (value == null) url.searchParams.delete(name);
+  else url.searchParams.set(name, value);
+  window.history.replaceState(null, '', url.pathname + url.search + url.hash);
+}

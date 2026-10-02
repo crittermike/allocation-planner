@@ -22,6 +22,32 @@ export function useScopeConfig(): ScopeConfig | null {
   return value;
 }
 
+const SEEN_KEY = 'scope-seen-v1';
+const SEEN_LIMIT = 200;
+
+function readSeen(): string[] {
+  try {
+    const raw: unknown = JSON.parse(localStorage.getItem(SEEN_KEY) ?? '[]');
+    return Array.isArray(raw) ? raw.filter((u): u is string => typeof u === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Whether this browser saw scope for the issue before, so the editor can open wide right away. */
+export function hadScope(url: string): boolean {
+  return readSeen().includes(url);
+}
+
+export function rememberScope(url: string, has: boolean) {
+  const seen = readSeen();
+  if (seen.includes(url) === has) return;
+  const next = has ? [url, ...seen].slice(0, SEEN_LIMIT) : seen.filter(u => u !== url);
+  try {
+    localStorage.setItem(SEEN_KEY, JSON.stringify(next));
+  } catch {}
+}
+
 export type ScopeResponse =
   | {
       status: 'ready';

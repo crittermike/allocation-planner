@@ -14,6 +14,7 @@ Not really a Gantt chart (no time-spanning bars, no dependencies) — it's a cap
 - Drag-and-drop or click-to-pick assignment
 - Estimated vs. planned eng-week tracking per project
 - Scope tracking for projects linked to GitHub issues: milestones, scope creep, and finish forecasts (optional; needs a GitHub token)
+- Shareable project links: while a project is open, the address bar links to it (`/<plan>/p/<project-id>`)
 - No login or auth (anyone with the link can view and edit)
 
 ## Stack
@@ -80,6 +81,8 @@ To turn it on, give the server a GitHub token:
 Locally, put them in `.env` at the repo root (it's gitignored) and restart `npm run dev`. On Fly.io, use `fly secrets set GITHUB_TOKEN=… GITHUB_SCOPE_REPOS=…`.
 
 The server only reads issues that the plan links to, using the plan's password check if it has one. Anyone who can open a plan can see the scope, including issue titles, for the issues it links to, so password-protect plans that link private issues. The last complete result per issue is cached in SQLite and refreshed in the background after 15 minutes; click "Updated … ago" to refresh now. A failed refresh keeps the last good data and says so.
+
+To share an epic's scope, copy the address bar while the project is open. Selecting a milestone adds `?milestone=<issue number>`, so the link opens that milestone.
 
 Dev builds also show fictional demo data for `acme-demo/invoice-exports` issue URLs, for working on the UI without a token.
 

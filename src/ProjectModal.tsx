@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
-import { ScopePanel, scopeSourceFor } from './ScopePanel';
-import { useScopeConfig } from './scopeApi';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { replaceSearchParam, searchParam } from './router';
+import { LoadingScope, ScopePanel, scopeSourceFor, type ScopeStatus } from './ScopePanel';
+import { hadScope, rememberScope, useScopeConfig } from './scopeApi';
 import type { Person, Project } from './types';
 
 /** Chip-style EM values offered in the picker. Must stay in sync with the
@@ -231,7 +232,17 @@ export function ProjectEditModal(props: {
   const [colorOpen, setColorOpen] = useState(false);
   const [colorRect, setColorRect] = useState<DOMRect | null>(null);
   const scopeConfig = useScopeConfig();
-  const [scopeVisible, setScopeVisible] = useState(false);
+  const [scope, setScope] = useState<{ url: string; status: ScopeStatus } | null>(null);
+  const onScopeStatus = useCallback((status: ScopeStatus, url: string) => {
+    setScope({ url, status });
+    if (status !== 'loading') rememberScope(url, status === 'content');
+  }, []);
+  // Links can point at one milestone: /<slug>/p/<projectId>?milestone=<issue number>.
+  const [milestone, setMilestone] = useState(() => Number(searchParam('milestone')) || undefined);
+  const onMilestoneChange = useCallback((next: number | null) => {
+    setMilestone(next ?? undefined);
+    replaceSearchParam('milestone', next == null ? null : String(next));
+  }, []);
   const openedUrl = useRef(props.project.url);
 
   useEffect(() => {
@@ -255,6 +266,16 @@ export function ProjectEditModal(props: {
   }
   // Projects linked to a GitHub issue the planner can read get scope tracking automatically.
   const tracked = props.slug ? scopeSourceFor(project.url, scopeConfig) : null;
+  const trackedUrl = tracked?.issue.url;
+  const scopeStatus: ScopeStatus = trackedUrl && scope?.url === trackedUrl ? scope.status : 'loading';
+  // A link's milestone belongs to the issue the project pointed at when it opened.
+  const linkMilestone = project.url === openedUrl.current ? milestone : undefined;
+  // Open wide right away for issues that showed scope before, instead of growing once loaded.
+  const expectScope = useMemo(
+    () => !!trackedUrl && (linkMilestone != null || hadScope(trackedUrl)),
+    [trackedUrl, linkMilestone],
+  );
+  const wide = !!tracked && (scopeStatus === 'content' || (scopeStatus === 'loading' && expectScope));
 
   return (
     <div
@@ -264,11 +285,14 @@ export function ProjectEditModal(props: {
       <div
         className={
           'anim-pop-in w-full rounded-2xl border border-ink-200 bg-white shadow-2xl ' +
-          (tracked && scopeVisible ? 'max-w-[1200px] lg:grid lg:grid-cols-[512px_minmax(0,1fr)]' : 'max-w-lg')
+          (wide ? 'max-w-[1200px] lg:grid lg:grid-cols-[512px_minmax(0,1fr)]' : 'max-w-lg')
         }
       >
         <div className="flex items-center justify-between gap-3 border-b border-ink-100 px-5 py-3.5 lg:col-span-2">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-500">Project</span>
+          <div className="flex items-center gap-3">
+            <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-500">Project</span>
+            {tracked && scopeStatus === 'loading' && !wide && <LoadingScope />}
+          </div>
           <button
             type="button"
             onClick={props.onClose}
@@ -399,7 +423,7 @@ export function ProjectEditModal(props: {
           </label>
         </div>
         {tracked && props.slug && (
-          <div className={'min-w-0 border-t border-ink-100 px-5 py-5 lg:border-l lg:border-t-0' + (scopeVisible ? '' : ' hidden')}>
+          <div className={'min-w-0 border-t border-ink-100 px-5 py-5 lg:border-l lg:border-t-0' + (wide ? '' : ' hidden')}>
             <ScopePanel
               key={tracked.issue.url}
               slug={props.slug}
@@ -408,7 +432,9 @@ export function ProjectEditModal(props: {
               releaseDate={project.releaseDate}
               projects={props.projects ?? []}
               settleMs={project.url === openedUrl.current ? 0 : undefined}
-              onVisibleChange={setScopeVisible}
+              onStatusChange={onScopeStatus}
+              milestone={linkMilestone}
+              onMilestoneChange={onMilestoneChange}
             />
           </div>
         )}

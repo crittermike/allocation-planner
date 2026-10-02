@@ -282,7 +282,7 @@ const collectIterationNotes = (
 
 /* ============================================================ */
 
-export default function Plan({ slug }: { slug: string }) {
+export default function Plan({ slug, projectId }: { slug: string; projectId?: string }) {
   const {
     state: liveState,
     setState: setLiveState,
@@ -329,6 +329,7 @@ export default function Plan({ slug }: { slug: string }) {
   return (
     <PlanView
       slug={slug}
+      initialProjectId={projectId}
       state={liveState}
       setState={setLiveState}
       conn={conn}
@@ -434,6 +435,7 @@ function sortByPriority(active: Project[], allProjects: Project[]): Project[] {
 
 function PlanView({
   slug,
+  initialProjectId,
   state,
   setState,
   conn,
@@ -442,6 +444,8 @@ function PlanView({
   changePassword,
 }: {
   slug: string;
+  /** Project to open on load, from a /<slug>/p/<projectId> link. */
+  initialProjectId?: ID;
   state: State;
   setState: (updater: (s: State) => State) => void;
   conn: ConnState;
@@ -954,7 +958,14 @@ function PlanView({
     else root.classList.remove('dark');
     try { localStorage.setItem(DARK_MODE_KEY, darkMode ? '1' : '0'); } catch {}
   }, [darkMode]);
-  const [editingProjectId, setEditingProjectId] = useState<ID | null>(null);
+  const [editingProjectId, setEditingProjectId] = useState<ID | null>(
+    () => (initialProjectId && state.projects.some(p => p.id === initialProjectId) ? initialProjectId : null),
+  );
+  // Keep the address bar pointing at the open project so the link can be shared.
+  useEffect(() => {
+    const target = editingProjectId ? `/${slug}/p/${editingProjectId}` : `/${slug}`;
+    if (window.location.pathname !== target) window.history.replaceState(null, '', target);
+  }, [slug, editingProjectId]);
   const [isAddingProject, setIsAddingProject] = useState(false);
   const [highlightedProjectId, setHighlightedProjectId] = useState<ID | null>(null);
   const [passwordDialog, setPasswordDialog] = useState<'set' | 'change' | 'remove' | null>(null);

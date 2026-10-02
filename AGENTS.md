@@ -22,7 +22,7 @@ Run `npm run build` before claiming code changes are complete — it both typech
 ## Important files
 
 ### Frontend
-- `src/main.tsx`, `src/App.tsx`, `src/router.ts`: bootstrap, slug-based routing (`/` → Home, `/<slug>` → Plan). Router is a tiny `pushState`/`popstate` hook plus a custom `app-navigate` event.
+- `src/main.tsx`, `src/App.tsx`, `src/router.ts`: bootstrap, slug-based routing (`/` → Home, `/<slug>` → Plan, `/<slug>/p/<projectId>` → Plan with that project's editor open). Router is a tiny `pushState`/`popstate` hook plus a custom `app-navigate` event, with `searchParam`/`replaceSearchParam` helpers. While a project editor is open, `PlanView` keeps the address bar at its link with `history.replaceState` (no new history entries).
 - `src/Home.tsx`: landing page — list of recent plans (from `/api/plans`), recently visited slugs (via `localStorage`), and the "new plan" form.
 - `src/visited.ts`: `localStorage`-backed record of slugs this browser has opened (for the Home page recents list).
 - `src/Plan.tsx`: main planner UI (~3.8k lines). Owns chart rendering in both orientations (`Chart` = people-as-rows, `ChartTransposed` = weeks-as-rows), drag/drop assignment behavior, projects table with DRI column and drag-to-reorder, the projects flyout (which embeds the capacity bars), per-week notes modal, and most local UI preferences (`localStorage`).
@@ -86,6 +86,7 @@ When adding new non-project assignment types, add a new sentinel ID and update `
 - `/api/plans/:slug/scope?url=…` (and `POST …/scope/refresh`) only serve issues that a project in that plan links to, and use the plan's password check, so the server's token can't be used to read arbitrary issues.
 - The server only fetches and caches GitHub's history (`ScopeHistory`). All counting and forecasting runs in the browser through `src/scope.ts`, so demo data and real data share one code path.
 - Count completions from each issue's close reason. GitHub's `subIssuesSummary.completed` counts "not planned" closures as completed.
+- `ScopePanel` reports `loading` / `content` / `none` to the project modal. The modal widens only for `content`, or right away while loading if the link names a milestone or this browser saw scope for the issue before (`scope-seen-v1` in `localStorage`); otherwise it shows "Loading scope…" in its header. Selecting a milestone writes `?milestone=<issue number>` to the URL.
 
 ## Data and deployment cautions
 

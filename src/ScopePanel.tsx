@@ -205,14 +205,44 @@ type PanelProps = {
   projects: Project[];
   /** Delay before loading, so typing an issue URL doesn't load every partial number. */
   settleMs?: number;
-  /** Whether there's anything to show: sub-issues, or a problem worth reporting. */
-  onVisibleChange?: (visible: boolean) => void;
+  onStatusChange?: (status: ScopeStatus, issueUrl: string) => void;
+  /** Milestone issue number to select first, e.g. from a shared link. */
+  milestone?: number;
+  onMilestoneChange?: (milestone: number | null) => void;
 };
 
-function useReportVisible(visible: boolean, onVisibleChange?: (visible: boolean) => void) {
+/** Whether there's anything to show: sub-issues or a problem worth reporting ("content"). */
+export type ScopeStatus = 'loading' | 'content' | 'none';
+
+function useReportStatus(issueUrl: string, status: ScopeStatus, onStatusChange?: PanelProps['onStatusChange']) {
   useEffect(() => {
-    onVisibleChange?.(visible);
-  }, [visible, onVisibleChange]);
+    onStatusChange?.(status, issueUrl);
+  }, [issueUrl, status, onStatusChange]);
+}
+
+function Spinner() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden className="shrink-0 animate-spin">
+      <circle cx="8" cy="8" r="6" stroke="currentColor" strokeOpacity="0.25" strokeWidth="2" />
+      <path d="M14 8a6 6 0 0 0-6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** Small "Loading scope…" note. Appears after a moment, so fast loads don't flash it. */
+export function LoadingScope() {
+  const [shown, setShown] = useState(false);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setShown(true), 250);
+    return () => window.clearTimeout(timer);
+  }, []);
+  if (!shown) return null;
+  return (
+    <span role="status" className="inline-flex items-center gap-1.5 text-[12px] text-ink-500">
+      <Spinner />
+      Loading scope…
+    </span>
+  );
 }
 
 export function ScopePanel(props: PanelProps) {
@@ -249,11 +279,11 @@ function Unreadable({ issue, at }: { issue: GitHubIssueRef; at: string }) {
 /** Demo scenario picked per URL, kept while the page is open. */
 const chosenScenarios = new Map<string, DemoScenario>();
 
-function DemoScope({ issue, releaseDate, projects, onVisibleChange }: PanelProps) {
+function DemoScope({ issue, releaseDate, projects, onStatusChange, milestone, onMilestoneChange }: PanelProps) {
   const [scenario, setScenario] = useState<DemoScenario>(() => chosenScenarios.get(issue.url) ?? 'normal');
   const load = useMemo(() => demoScope(issue, scenario), [issue.url, scenario]);
   // The scenario switcher stays reachable even when a scenario has no sub-issues.
-  useReportVisible(true, onVisibleChange);
+  useReportStatus(issue.url, 'content', onStatusChange);
   return (
     <PanelFrame
       status={load.status === 'ready' && (
@@ -284,7 +314,15 @@ function DemoScope({ issue, releaseDate, projects, onVisibleChange }: PanelProps
       {load.status === 'unreadable' ? (
         <Unreadable issue={issue} at={load.at} />
       ) : (
-        <ScopeDetails key={scenario} tracking={load.tracking} issue={issue} releaseDate={releaseDate} projects={projects} />
+        <ScopeDetails
+          key={scenario}
+          tracking={load.tracking}
+          issue={issue}
+          releaseDate={releaseDate}
+          projects={projects}
+          milestone={milestone}
+          onMilestoneChange={onMilestoneChange}
+        />
       )}
     </PanelFrame>
   );
@@ -295,8 +333,21 @@ const URL_SETTLE_MS = 700;
 const POLL_MS = 4000;
 const MAX_POLLS = 15;
 
-function GitHubScope({ slug, issue, releaseDate, projects, settleMs = URL_SETTLE_MS, onVisibleChange }: PanelProps) {
-  const [response, setResponse] = useState<ScopeResponse | null>(null);
+/** Last response per plan and issue, so reopening a project shows it right away. */
+const lastResponses = new Map<string, ScopeResponse>();
+
+function GitHubScope({
+  slug,
+  issue,
+  releaseDate,
+  projects,
+  settleMs = URL_SETTLE_MS,
+  onStatusChange,
+  milestone,
+  onMilestoneChange,
+}: PanelProps) {
+  const cacheKey = `${slug}\n${issue.url}`;
+  const [response, setResponse] = useState<ScopeResponse | null>(() => lastResponses.get(cacheKey) ?? null);
   const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
@@ -307,12 +358,15 @@ function GitHubScope({ slug, issue, releaseDate, projects, settleMs = URL_SETTLE
     const load = async () => {
       const res = await requestScope(slug, issue.url);
       if (!alive) return;
-      setResponse(res);
       if (res.status === 'error' && res.code === 403 && !retried) {
         // A URL edited moments ago may not be saved to the plan yet.
         retried = true;
         timer = window.setTimeout(load, 1500);
-      } else if (res.status === 'ready' && res.refreshing && polls++ < MAX_POLLS) {
+        return;
+      }
+      lastResponses.set(cacheKey, res);
+      setResponse(res);
+      if (res.status === 'ready' && res.refreshing && polls++ < MAX_POLLS) {
         timer = window.setTimeout(load, POLL_MS);
       }
     };
@@ -321,11 +375,12 @@ function GitHubScope({ slug, issue, releaseDate, projects, settleMs = URL_SETTLE
       alive = false;
       window.clearTimeout(timer);
     };
-  }, [slug, issue.url, settleMs]);
+  }, [slug, issue.url, settleMs, cacheKey]);
 
   const refresh = async () => {
     setRefreshing(true);
     const res = await requestScope(slug, issue.url, true);
+    lastResponses.set(cacheKey, res);
     setResponse(res);
     setRefreshing(false);
   };
@@ -337,10 +392,12 @@ function GitHubScope({ slug, issue, releaseDate, projects, settleMs = URL_SETTLE
     [response],
   );
   // Issues without sub-issues show nothing. A just-edited URL that isn't saved yet isn't an error.
-  const visible = tracking
-    ? hasSubIssues(tracking)
-    : response?.status === 'unreadable' || (response?.status === 'error' && response.code !== 403);
-  useReportVisible(visible, onVisibleChange);
+  const status: ScopeStatus = !response
+    ? 'loading'
+    : (tracking && !hasSubIssues(tracking)) || (response.status === 'error' && response.code === 403)
+      ? 'none'
+      : 'content';
+  useReportStatus(issue.url, status, onStatusChange);
   const busy = refreshing || (response?.status === 'ready' && response.refreshing);
 
   return (
@@ -362,7 +419,10 @@ function GitHubScope({ slug, issue, releaseDate, projects, settleMs = URL_SETTLE
       )}
     >
       {!response && (
-        <p className="animate-pulse text-[12.5px] text-ink-500">Loading from GitHub… The first load can take a few seconds.</p>
+        <p role="status" className="flex items-center gap-2 text-[12.5px] text-ink-500">
+          <Spinner />
+          Loading from GitHub… The first load can take a few seconds.
+        </p>
       )}
       {response?.status === 'unreadable' && <Unreadable issue={issue} at={response.at} />}
       {response?.status === 'error' && (
@@ -376,19 +436,36 @@ function GitHubScope({ slug, issue, releaseDate, projects, settleMs = URL_SETTLE
           )}
         </div>
       )}
-      {tracking && <ScopeDetails tracking={tracking} issue={issue} releaseDate={releaseDate} projects={projects} />}
+      {tracking && (
+        <ScopeDetails
+          tracking={tracking}
+          issue={issue}
+          releaseDate={releaseDate}
+          projects={projects}
+          milestone={milestone}
+          onMilestoneChange={onMilestoneChange}
+        />
+      )}
     </PanelFrame>
   );
 }
 
-function ScopeDetails({ tracking, issue, releaseDate, projects }: {
+function ScopeDetails({ tracking, issue, releaseDate, projects, milestone, onMilestoneChange }: {
   tracking: ScopeTracking;
   issue: GitHubIssueRef;
   releaseDate?: string;
   projects: Project[];
+  milestone?: number;
+  onMilestoneChange?: (milestone: number | null) => void;
 }) {
   const analysis = useMemo(() => analyzeScope(tracking), [tracking]);
-  const [viewId, setViewId] = useState(analysis.defaultViewId);
+  const [viewId, setViewId] = useState(
+    () => analysis.views.find(v => milestone != null && v.issue?.number === milestone)?.id ?? analysis.defaultViewId,
+  );
+  const selectView = (id: string) => {
+    setViewId(id);
+    onMilestoneChange?.(analysis.views.find(v => v.id === id)?.issue?.number ?? null);
+  };
   const names = useMemo(() => {
     const short = analysis.hasBreakdown ? milestoneNames(analysis.views.map(v => v.label)) : [];
     return new Map(analysis.views.map((v, i) => [v.id, short[i] ?? v.label]));
@@ -426,7 +503,7 @@ function ScopeDetails({ tracking, issue, releaseDate, projects }: {
         <p key={w} className="-mt-1 text-[11.5px] leading-relaxed text-amber-800">{w}</p>
       ))}
       {analysis.hasBreakdown && (
-        <MilestoneTable analysis={analysis} names={names} selectedId={view.id} onSelect={setViewId} targetFor={targetFor} />
+        <MilestoneTable analysis={analysis} names={names} selectedId={view.id} onSelect={selectView} targetFor={targetFor} />
       )}
       <MilestoneDetail
         key={view.id}
