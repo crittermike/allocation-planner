@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PlanState } from './types';
 import { recordVisit } from './visited';
+import { pruneMilestoneRefs, sanitizeMilestones } from './milestones';
 
 export type ConnState = 'connecting' | 'open' | 'closed' | 'missing';
 
 export type PasswordError = 'wrong_password' | 'too_many_attempts' | 'auth_required' | 'password_too_short' | 'password_too_long' | 'unknown';
 
 /** Migrate plan state from older schemas so old plans keep working.
- *  Convert legacy estimates to EM and leave release dates unset on older plans. */
+ *  Convert legacy estimates to EM, leave release dates unset on older plans, and
+ *  drop milestone references that no longer match a milestone of their project. */
 function migrateState(raw: any): PlanState {
   if (!raw || typeof raw !== 'object') return raw;
   const projects = Array.isArray(raw.projects)
@@ -19,10 +21,14 @@ function migrateState(raw: any): PlanState {
             ? { estimateEM: p.estimatedWeeks / 4 }
             : {}),
           releaseDate: p.releaseDate || undefined,
+          milestones: sanitizeMilestones(p.milestones),
         };
       })
     : raw.projects;
-  return { ...raw, projects } as PlanState;
+  const assignments = Array.isArray(raw.assignments) && Array.isArray(projects)
+    ? pruneMilestoneRefs(raw.assignments, projects.filter(Boolean))
+    : raw.assignments;
+  return { ...raw, projects, assignments } as PlanState;
 }
 
 export type UsePlan = {

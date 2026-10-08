@@ -12,13 +12,22 @@ import {
 } from './Capacity';
 import { deriveCapacity } from './capacityShared';
 import { ColorPopover, ProjectEditModal } from './ProjectModal';
-import type { Project } from './types';
+import {
+  milestoneLabel,
+  milestoneOf,
+  newMilestonesFrom,
+  releasesByWeek as groupReleasesByWeek,
+  removeMilestone as removeMilestoneFromState,
+  sameSlot,
+  setAssignmentMilestone as setAssignmentMilestoneInState,
+  type ScheduledRelease,
+} from './milestones';
+import type { Assignment, Milestone, Project } from './types';
 
 type ID = string;
 
 type Person = { id: ID; name: string };
 type Iteration = { id: ID; startDate: string; goal?: string };
-type Assignment = { id: ID; personId: ID; weekId: string; projectId: ID };
 
 type Buffer = { id: ID; label: string; pct: number; note?: string };
 type Quarter = {
@@ -225,7 +234,6 @@ const writeCollapsedIterationIds = (slug: string, ids: ID[]) => {
 };
 
 type WeekInfo = { id: string; label: string; startDate: string; iterationId: ID; index: 0 | 1 };
-type ScheduledRelease = Project & { releaseDate: string };
 
 const weeksOfIteration = (iter: Iteration): WeekInfo[] => {
   const start = parseISODate(iter.startDate);
@@ -248,21 +256,28 @@ const iterationDateRange = (iter: Iteration): string => {
     : `${m1} ${start.getDate()}–${m2} ${end.getDate()}`;
 };
 
-type CollapsedAssignmentSummary = { projectId: ID; weeks: number };
+type CollapsedAssignmentSummary = { projectId: ID; weeks: number; milestoneIds: ID[] };
 
 const summarizeIterationAssignments = (
   assignments: Assignment[],
   personId: ID,
   iterationId: ID,
 ): CollapsedAssignmentSummary[] => {
-  const counts = new Map<ID, number>();
+  const byProject = new Map<ID, { weeks: Set<string>; milestoneIds: Set<ID> }>();
   const prefix = `${iterationId}:`;
   for (const a of assignments) {
     if (a.personId !== personId) continue;
     if (!a.weekId.startsWith(prefix)) continue;
-    counts.set(a.projectId, (counts.get(a.projectId) ?? 0) + 1);
+    const entry = byProject.get(a.projectId) ?? { weeks: new Set(), milestoneIds: new Set() };
+    entry.weeks.add(a.weekId);
+    if (a.milestoneId) entry.milestoneIds.add(a.milestoneId);
+    byProject.set(a.projectId, entry);
   }
-  return Array.from(counts.entries()).map(([projectId, weeks]) => ({ projectId, weeks }));
+  return Array.from(byProject.entries()).map(([projectId, { weeks, milestoneIds }]) => ({
+    projectId,
+    weeks: weeks.size,
+    milestoneIds: [...milestoneIds],
+  }));
 };
 
 const collectIterationNotes = (
@@ -473,18 +488,10 @@ function PlanView({
     () => state.iterations.flatMap(weeksOfIteration),
     [state.iterations],
   );
-  const releasesByWeek = useMemo(() => {
-    const releases = state.projects
-      .filter((p): p is ScheduledRelease => !p.descoped && !!p.releaseDate)
-      .sort((a, b) => a.releaseDate.localeCompare(b.releaseDate) || a.name.localeCompare(b.name));
-    return Object.fromEntries(allWeeks.map(week => {
-      const endDate = toISODate(addDays(parseISODate(week.startDate), 7));
-      return [
-        week.id,
-        releases.filter(p => p.releaseDate >= week.startDate && p.releaseDate < endDate),
-      ] as const;
-    }));
-  }, [state.projects, allWeeks]);
+  const releasesByWeek = useMemo(
+    () => groupReleasesByWeek(state.projects, allWeeks),
+    [state.projects, allWeeks],
+  );
   const iterationToneById = useMemo(() => {
     const today = startOfToday();
     const tones: Record<ID, IterationTone> = {};
@@ -590,6 +597,17 @@ function PlanView({
       projects: s.projects.map(p => (p.id === id ? { ...p, ...patch } : p)),
     }));
   };
+  const updateMilestone = (projectId: ID, milestoneId: ID, patch: Partial<Omit<Milestone, 'id'>>) => {
+    const current = milestoneOf(stateRef.current.projects.find(p => p.id === projectId), milestoneId);
+    if (!current) return;
+    if ('releaseDate' in patch && current.releaseDate !== patch.releaseDate) pushUndo();
+    setState(s => ({
+      ...s,
+      projects: s.projects.map(p => (p.id === projectId
+        ? { ...p, milestones: p.milestones?.map(m => (m.id === milestoneId ? { ...m, ...patch } : m)) }
+        : p)),
+    }));
+  };
   const setWeekNote = (weekId: string, text: string) =>
     setState(s => {
       const next = { ...(s.weekNotes ?? {}) };
@@ -648,6 +666,26 @@ function PlanView({
       projects: s.projects.filter(p => p.id !== id),
       assignments: s.assignments.filter(a => a.projectId !== id),
     }));
+  };
+  const addMilestones = (projectId: ID, items: Omit<Milestone, 'id'>[]) => {
+    if (items.length === 0) return;
+    pushUndo();
+    setState(s => ({
+      ...s,
+      projects: s.projects.map(p => {
+        if (p.id !== projectId) return p;
+        const fresh = newMilestonesFrom(p.milestones, items, uid);
+        return fresh.length ? { ...p, milestones: [...(p.milestones ?? []), ...fresh] } : p;
+      }),
+    }));
+  };
+  const removeMilestone = (projectId: ID, milestoneId: ID) => {
+    pushUndo();
+    setState(s => removeMilestoneFromState(s, projectId, milestoneId));
+  };
+  const setAssignmentMilestone = (assignmentId: ID, milestoneId: ID | undefined) => {
+    pushUndo();
+    setState(s => setAssignmentMilestoneInState(s, assignmentId, milestoneId));
   };
   const descopeProject = (id: ID) => {
     const proj = state.projects.find(p => p.id === id);
@@ -843,12 +881,15 @@ function PlanView({
       };
     });
   };
-  const addAssignment = (personId: ID, weekId: string, projectId: ID) => {
+  const addAssignment = (personId: ID, weekId: string, projectId: ID, milestoneId?: ID) => {
     pushUndo();
     setState(s => {
-      if (s.assignments.some(a => a.personId === personId && a.weekId === weekId && a.projectId === projectId))
-        return s;
-      return { ...s, assignments: [...s.assignments, { id: uid(), personId, weekId, projectId }] };
+      const valid = milestoneOf(s.projects.find(p => p.id === projectId), milestoneId) ? milestoneId : undefined;
+      const next: Assignment = valid
+        ? { id: uid(), personId, weekId, projectId, milestoneId: valid }
+        : { id: uid(), personId, weekId, projectId };
+      if (s.assignments.some(a => sameSlot(a, next))) return s;
+      return { ...s, assignments: [...s.assignments, next] };
     });
   };
   const moveAssignment = (assignmentId: ID, personId: ID, weekId: string) => {
@@ -857,7 +898,7 @@ function PlanView({
       const a = s.assignments.find(x => x.id === assignmentId);
       if (!a) return s;
       const dup = s.assignments.some(
-        x => x.id !== assignmentId && x.personId === personId && x.weekId === weekId && x.projectId === a.projectId,
+        x => x.id !== assignmentId && sameSlot(x, { ...a, personId, weekId }),
       );
       if (dup) return { ...s, assignments: s.assignments.filter(x => x.id !== assignmentId) };
       return {
@@ -1070,6 +1111,13 @@ function PlanView({
     () => state.projects.find(p => p.id === editingProjectId) ?? null,
     [state.projects, editingProjectId],
   );
+  const assignedByMilestone = useMemo(() => {
+    const counts: Record<ID, number> = {};
+    for (const a of state.assignments) {
+      if (a.projectId === editingProjectId && a.milestoneId) counts[a.milestoneId] = (counts[a.milestoneId] ?? 0) + 1;
+    }
+    return counts;
+  }, [state.assignments, editingProjectId]);
 
   return (
     <>
@@ -1168,6 +1216,7 @@ function PlanView({
               duplicateIteration={duplicateIteration}
               addAssignment={addAssignment}
               moveAssignment={moveAssignment}
+              setAssignmentMilestone={setAssignmentMilestone}
               removeAssignment={removeAssignment}
               setWeekNote={setWeekNote}
               onTextFocus={onTextFocus}
@@ -1195,6 +1244,7 @@ function PlanView({
               duplicateIteration={duplicateIteration}
               addAssignment={addAssignment}
               moveAssignment={moveAssignment}
+              setAssignmentMilestone={setAssignmentMilestone}
               removeAssignment={removeAssignment}
               setWeekNote={setWeekNote}
               onTextFocus={onTextFocus}
@@ -1345,6 +1395,10 @@ function PlanView({
         planned={plannedByProject[editingProject.id] ?? 0}
         weeksPerEM={state.quarter?.weeksPerEM ?? 4}
         onUpdate={patch => updateProject(editingProject.id, patch)}
+        onAddMilestones={items => addMilestones(editingProject.id, items)}
+        onUpdateMilestone={(milestoneId, patch) => updateMilestone(editingProject.id, milestoneId, patch)}
+        onRemoveMilestone={milestoneId => removeMilestone(editingProject.id, milestoneId)}
+        assignedByMilestone={assignedByMilestone}
         onRemove={() => removeProject(editingProject.id)}
         onClose={() => { setEditingProjectId(null); setIsAddingProject(false); }}
         isNew={isAddingProject}
@@ -1835,8 +1889,9 @@ function Chart(props: {
   setIterationStart: (id: ID, isoDate: string) => void;
   setIterationGoal: (id: ID, goal: string) => void;
   duplicateIteration: (id: ID) => void;
-  addAssignment: (personId: ID, weekId: string, projectId: ID) => void;
+  addAssignment: (personId: ID, weekId: string, projectId: ID, milestoneId?: ID) => void;
   moveAssignment: (assignmentId: ID, personId: ID, weekId: string) => void;
+  setAssignmentMilestone: (assignmentId: ID, milestoneId: ID | undefined) => void;
   removeAssignment: (id: ID) => void;
   setWeekNote: (weekId: string, text: string) => void;
   onTextFocus: () => void;
@@ -1879,14 +1934,15 @@ function Chart(props: {
   const [extending, setExtending] = useState<null | {
     personId: ID;
     projectId: ID;
+    milestoneId?: ID;
     fromIdx: number;
     toIdx: number;
   }>(null);
 
-  const startExtend = (personId: ID, projectId: ID, weekId: string) => {
+  const startExtend = (personId: ID, projectId: ID, milestoneId: ID | undefined, weekId: string) => {
     const fromIdx = visibleWeeks.findIndex(w => w.id === weekId);
     if (fromIdx === -1) return;
-    setExtending({ personId, projectId, fromIdx, toIdx: fromIdx });
+    setExtending({ personId, projectId, milestoneId, fromIdx, toIdx: fromIdx });
 
     const onMove = (e: MouseEvent) => {
       const el = (document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null)?.closest(
@@ -1905,7 +1961,7 @@ function Chart(props: {
         if (curr) {
           for (let i = curr.fromIdx + 1; i <= curr.toIdx; i++) {
             const w = visibleWeeks[i];
-            if (w) props.addAssignment(curr.personId, w.id, curr.projectId);
+            if (w) props.addAssignment(curr.personId, w.id, curr.projectId, curr.milestoneId);
           }
         }
         return null;
@@ -2185,11 +2241,13 @@ function Chart(props: {
                       isPastWeek={tone === 'past'}
                       highlightedProjectId={props.highlightedProjectId}
                       extendPreviewProject={extendPreviewProject}
+                      extendPreviewMilestone={inExtendPreview ? milestoneOf(extendPreviewProject, extending!.milestoneId) : undefined}
                       onAdd={pid => props.addAssignment(person.id, w.id, pid)}
                       onMove={aid => props.moveAssignment(aid, person.id, w.id)}
                       onRemove={props.removeAssignment}
                       onPick={rect => setPicker({ personId: person.id, weekId: w.id, rect })}
-                      onStartExtend={(projectId) => startExtend(person.id, projectId, w.id)}
+                      onStartExtend={(projectId, milestoneId) => startExtend(person.id, projectId, milestoneId, w.id)}
+                        onSetMilestone={props.setAssignmentMilestone}
                     />
                   );
                 });
@@ -2285,8 +2343,8 @@ function Chart(props: {
         <ProjectPicker
           rect={picker.rect}
           projects={state.projects.filter(p => !p.descoped)}
-          onPick={pid => {
-            props.addAssignment(picker.personId, picker.weekId, pid);
+          onPick={(pid, milestoneId) => {
+            props.addAssignment(picker.personId, picker.weekId, pid, milestoneId);
             setPicker(null);
           }}
           onClose={() => setPicker(null)}
@@ -2319,7 +2377,11 @@ function CollapsedIterationCell(props: {
     .map(s => {
       const project = lookupProject(props.projectsById, s.projectId);
       const name = project?.name ?? 'Unknown';
-      return `${name} · ${s.weeks} ${s.weeks === 1 ? 'wk' : 'wks'}`;
+      const milestones = s.milestoneIds
+        .map(id => milestoneOf(project, id))
+        .filter((m): m is Milestone => !!m)
+        .map(milestoneLabel);
+      return `${name}${milestones.length ? ` (${milestones.join(', ')})` : ''} · ${s.weeks} ${s.weeks === 1 ? 'wk' : 'wks'}`;
     });
   const tooltip =
     summary.length === 0
@@ -2407,17 +2469,18 @@ function WeekReleases({ releases, onEdit, showHeading = false }: {
         <div className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-500">Releases</div>
       )}
       <ul aria-label="Scheduled releases" className="space-y-1">
-        {releases.map(project => {
-          const date = parseISODate(project.releaseDate);
+        {releases.map(({ key, project, milestone, releaseDate }) => {
+          const date = parseISODate(releaseDate);
           const fullDate = date.toLocaleDateString('en-US', { dateStyle: 'full' });
-          const name = project.name || 'Untitled project';
+          const projectName = project.name || 'Untitled project';
+          const name = milestone ? `${projectName} · ${milestoneLabel(milestone)}` : projectName;
           return (
-            <li key={project.id}>
+            <li key={key}>
               <button
                 type="button"
                 onClick={e => { e.stopPropagation(); onEdit(project.id); }}
-                title={`${name}\nCommunicated release: ${fullDate}\nClick to edit project`}
-                aria-label={`${name} releases ${fullDate}; edit project`}
+                title={`${name}\n${milestone ? 'Milestone ship date' : 'Communicated release'}: ${fullDate}\nClick to edit project`}
+                aria-label={`${name} ${milestone ? 'milestone ships' : 'releases'} ${fullDate}; edit project`}
                 className="chip-tint flex w-full max-w-[240px] items-center gap-2 rounded-md border px-2 py-1.5 text-left transition-shadow hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-400"
                 style={{
                   ['--cc' as string]: project.color,
@@ -2430,8 +2493,14 @@ function WeekReleases({ releases, onEdit, showHeading = false }: {
                   <circle cx="7" cy="6.5" r="1.1" />
                 </svg>
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[11px] font-semibold leading-snug">{name}</span>
-                  <time dateTime={project.releaseDate} className="block text-[10px] leading-snug tabular-nums">
+                  <span className="block truncate text-[11px] font-semibold leading-snug">{projectName}</span>
+                  {milestone && (
+                    <span className="flex min-w-0 items-center gap-1 text-[10px] font-medium leading-snug">
+                      <span className="inline-block h-1.5 w-1.5 shrink-0 rotate-45 rounded-[1px] bg-current opacity-70" aria-hidden />
+                      <span className="truncate">{milestoneLabel(milestone)}</span>
+                    </span>
+                  )}
+                  <time dateTime={releaseDate} className="block text-[10px] leading-snug tabular-nums">
                     {date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
                   </time>
                 </span>
@@ -2761,8 +2830,9 @@ function ChartTransposed(props: {
   setIterationStart: (id: ID, isoDate: string) => void;
   setIterationGoal: (id: ID, goal: string) => void;
   duplicateIteration: (id: ID) => void;
-  addAssignment: (personId: ID, weekId: string, projectId: ID) => void;
+  addAssignment: (personId: ID, weekId: string, projectId: ID, milestoneId?: ID) => void;
   moveAssignment: (assignmentId: ID, personId: ID, weekId: string) => void;
+  setAssignmentMilestone: (assignmentId: ID, milestoneId: ID | undefined) => void;
   removeAssignment: (id: ID) => void;
   setWeekNote: (weekId: string, text: string) => void;
   onTextFocus: () => void;
@@ -2795,14 +2865,15 @@ function ChartTransposed(props: {
   const [extending, setExtending] = useState<null | {
     personId: ID;
     projectId: ID;
+    milestoneId?: ID;
     fromIdx: number;
     toIdx: number;
   }>(null);
 
-  const startExtend = (personId: ID, projectId: ID, weekId: string) => {
+  const startExtend = (personId: ID, projectId: ID, milestoneId: ID | undefined, weekId: string) => {
     const fromIdx = visibleWeeks.findIndex(w => w.id === weekId);
     if (fromIdx === -1) return;
-    setExtending({ personId, projectId, fromIdx, toIdx: fromIdx });
+    setExtending({ personId, projectId, milestoneId, fromIdx, toIdx: fromIdx });
     const onMove = (e: MouseEvent) => {
       const el = (document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null)?.closest(
         '[data-cell="1"]',
@@ -2820,7 +2891,7 @@ function ChartTransposed(props: {
         if (curr) {
           for (let i = curr.fromIdx + 1; i <= curr.toIdx; i++) {
             const w = visibleWeeks[i];
-            if (w) props.addAssignment(curr.personId, w.id, curr.projectId);
+            if (w) props.addAssignment(curr.personId, w.id, curr.projectId, curr.milestoneId);
           }
         }
         return null;
@@ -3173,11 +3244,13 @@ function ChartTransposed(props: {
                         isPastWeek={isPast}
                         highlightedProjectId={props.highlightedProjectId}
                         extendPreviewProject={extendPreviewProject}
+                        extendPreviewMilestone={inExtendPreview ? milestoneOf(extendPreviewProject, extending!.milestoneId) : undefined}
                         onAdd={pid => props.addAssignment(person.id, w.id, pid)}
                         onMove={aid => props.moveAssignment(aid, person.id, w.id)}
                         onRemove={props.removeAssignment}
                         onPick={rect => setPicker({ personId: person.id, weekId: w.id, rect })}
-                        onStartExtend={(projectId) => startExtend(person.id, projectId, w.id)}
+                        onStartExtend={(projectId, milestoneId) => startExtend(person.id, projectId, milestoneId, w.id)}
+                      onSetMilestone={props.setAssignmentMilestone}
                       />
                     );
                   })}
@@ -3216,8 +3289,8 @@ function ChartTransposed(props: {
         <ProjectPicker
           rect={picker.rect}
           projects={state.projects.filter(p => !p.descoped)}
-          onPick={pid => {
-            props.addAssignment(picker.personId, picker.weekId, pid);
+          onPick={(pid, milestoneId) => {
+            props.addAssignment(picker.personId, picker.weekId, pid, milestoneId);
             setPicker(null);
           }}
           onClose={() => setPicker(null)}
@@ -3239,13 +3312,16 @@ function Cell(props: {
   rowAlt: boolean;
   highlightedProjectId: ID | null;
   extendPreviewProject?: Project;
+  extendPreviewMilestone?: Milestone;
   onAdd: (projectId: ID) => void;
   onMove: (assignmentId: ID) => void;
   onRemove: (assignmentId: ID) => void;
   onPick: (rect: DOMRect) => void;
-  onStartExtend: (projectId: ID) => void;
+  onStartExtend: (projectId: ID, milestoneId?: ID) => void;
+  onSetMilestone: (assignmentId: ID, milestoneId: ID | undefined) => void;
 }) {
   const [hover, setHover] = useState(false);
+  const [milestoneMenu, setMilestoneMenu] = useState<{ assignmentId: ID; rect: DOMRect } | null>(null);
   const cellRef = useRef<HTMLTableCellElement>(null);
 
   const onDragOver = (e: React.DragEvent) => {
@@ -3349,15 +3425,24 @@ function Cell(props: {
             }}
           >
             {props.extendPreviewProject.name}
+            {props.extendPreviewMilestone && (
+              <span className="font-medium opacity-80"> · {milestoneLabel(props.extendPreviewMilestone)}</span>
+            )}
           </span>
         )}
         {props.assignments.map(a => {
           const proj = lookupProject(props.projectsById, a.projectId);
           if (!proj) return null;
+          const milestone = milestoneOf(proj, a.milestoneId);
+          const openUrl = milestone?.url ?? proj.url;
           return (
             <AssignChip
               key={a.id}
               project={proj}
+              milestone={milestone}
+              onOpenMilestones={proj.milestones?.length
+                ? rect => setMilestoneMenu({ assignmentId: a.id, rect })
+                : undefined}
               isPto={isPto(a.projectId)}
               isFR={isFR(a.projectId)}
               isUnavailable={isUnavailable(a.projectId)}
@@ -3369,22 +3454,42 @@ function Cell(props: {
               }}
               onClick={e => {
                 e.stopPropagation();
-                if (proj.url) window.open(proj.url, '_blank', 'noopener,noreferrer');
+                if (openUrl) window.open(openUrl, '_blank', 'noopener,noreferrer');
               }}
               onRemove={() => props.onRemove(a.id)}
-              onStartExtend={() => props.onStartExtend(a.projectId)}
+              onStartExtend={() => props.onStartExtend(a.projectId, milestone?.id)}
             />
           );
         })}
         </>
         )}
       </div>
+      {milestoneMenu && (() => {
+        const a = props.assignments.find(x => x.id === milestoneMenu.assignmentId);
+        const proj = a && lookupProject(props.projectsById, a.projectId);
+        if (!a || !proj?.milestones?.length) return null;
+        return (
+          <MilestoneMenu
+            rect={milestoneMenu.rect}
+            project={proj}
+            currentId={milestoneOf(proj, a.milestoneId)?.id}
+            onPick={milestoneId => {
+              props.onSetMilestone(a.id, milestoneId);
+              setMilestoneMenu(null);
+            }}
+            onClose={() => setMilestoneMenu(null)}
+          />
+        );
+      })()}
     </td>
   );
 }
 
 function AssignChip(props: {
   project: Project;
+  milestone?: Milestone;
+  /** Present when the project has milestones the assignment can be pointed at. */
+  onOpenMilestones?: (rect: DOMRect) => void;
   isPto?: boolean;
   isFR?: boolean;
   isUnavailable?: boolean;
@@ -3422,8 +3527,10 @@ function AssignChip(props: {
           : unavail
           ? 'Not available'
           : project.name +
+            (props.milestone ? ` · ${milestoneLabel(props.milestone)}` : '') +
             (isOwnDri ? ' · DRI' : '') +
-            (project.url ? `\nClick to open ${project.url}` : '')
+            ((props.milestone?.url ?? project.url) ? `\nClick to open ${props.milestone?.url ?? project.url}` : '') +
+            (props.onOpenMilestones ? '\nUse ◆ to pick a milestone' : '')
       }
       className={
         baseClass +
@@ -3435,7 +3542,7 @@ function AssignChip(props: {
           : unavail
           ? 'border border-ink-400/60 bg-ink-300 uppercase tracking-[0.06em]'
           : 'chip-tint border shadow-[0_1px_2px_rgba(15,23,42,0.04)]') +
-        (project.url && !isSentinelChip ? ' cursor-pointer' : '')
+        ((props.milestone?.url ?? project.url) && !isSentinelChip ? ' cursor-pointer' : '')
       }
       style={mutedStyle}
     >
@@ -3461,9 +3568,34 @@ function AssignChip(props: {
           </span>
         )
       )}
-      <span className="min-w-0 truncate leading-tight">
-        {fr ? 'FR' : project.name}
-      </span>
+      {props.milestone && !isSentinelChip ? (
+        <span className="flex min-w-0 flex-col leading-tight">
+          <span className="truncate">{project.name}</span>
+          <span className="flex min-w-0 items-center gap-1 text-[10px] font-medium opacity-80">
+            <span className="inline-block h-1.5 w-1.5 shrink-0 rotate-45 rounded-[1px] bg-current opacity-70" aria-hidden />
+            <span className="truncate">{milestoneLabel(props.milestone)}</span>
+          </span>
+        </span>
+      ) : (
+        <span className="min-w-0 truncate leading-tight">
+          {fr ? 'FR' : project.name}
+        </span>
+      )}
+      {props.onOpenMilestones && !isSentinelChip && (
+        <button
+          type="button"
+          aria-label={props.milestone ? 'Change milestone' : 'Pick a milestone'}
+          title={props.milestone ? 'Change milestone' : 'Pick a milestone'}
+          onMouseDown={e => e.stopPropagation()}
+          onClick={e => {
+            e.stopPropagation();
+            props.onOpenMilestones!((e.currentTarget as HTMLElement).getBoundingClientRect());
+          }}
+          className="ml-0.5 inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full text-[8px] opacity-0 transition group-hover/chip:opacity-60 focus-visible:opacity-100 focus-visible:outline focus-visible:outline-2 hover:!opacity-100 hover:bg-black/15"
+        >
+          ◆
+        </button>
+      )}
       <span
         onClick={e => {
           e.stopPropagation();
@@ -3852,10 +3984,90 @@ function ProjectRow(props: {
   );
 }
 
+function MilestoneMenu(props: {
+  rect: DOMRect;
+  project: Project;
+  currentId?: ID;
+  onPick: (milestoneId: ID | undefined) => void;
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const { onClose } = props;
+  useEffect(() => {
+    const onDoc = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [onClose]);
+
+  const milestones = props.project.milestones ?? [];
+  const w = 260;
+  const h = Math.min(320, 64 + (milestones.length + 1) * 30);
+  let top = props.rect.bottom + 4;
+  let left = props.rect.left - 8;
+  if (top + h > window.innerHeight) top = props.rect.top - h - 4;
+  if (left + w > window.innerWidth) left = window.innerWidth - w - 8;
+  if (left < 8) left = 8;
+
+  const option = (id: ID | undefined, label: string, extra?: React.ReactNode) => {
+    const selected = props.currentId === id;
+    return (
+      <button
+        key={id ?? '__none__'}
+        role="menuitemradio"
+        aria-checked={selected}
+        onClick={e => { e.stopPropagation(); props.onPick(id); }}
+        className={
+          'flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[12.5px] transition hover:bg-ink-100 ' +
+          (selected ? 'bg-brand-50 font-semibold text-ink-900' : 'text-ink-700')
+        }
+      >
+        <span className="w-3 shrink-0 text-center text-[11px] text-brand-600" aria-hidden>{selected ? '✓' : ''}</span>
+        <span className={'truncate' + (id ? '' : ' italic text-ink-500')}>{label}</span>
+        {extra}
+      </button>
+    );
+  };
+
+  return (
+    <div
+      ref={ref}
+      role="menu"
+      aria-label={`Milestones of ${props.project.name}`}
+      onClick={e => e.stopPropagation()}
+      className="anim-pop-in fixed z-50 flex flex-col overflow-hidden rounded-xl border border-ink-200 bg-white shadow-2xl"
+      style={{ top, left, width: w, maxHeight: h }}
+    >
+      <div className="flex items-center gap-2 border-b border-ink-200 bg-ink-50/60 px-3 py-2">
+        <span className="inline-block h-3 w-3 shrink-0 rounded-full border border-black/5" style={{ background: props.project.color }} />
+        <span className="truncate text-[11px] font-semibold uppercase tracking-[0.06em] text-ink-500">{props.project.name}</span>
+      </div>
+      <div className="flex-1 overflow-y-auto p-1.5">
+        {option(undefined, 'Whole project')}
+        {milestones.map(m => option(
+          m.id,
+          milestoneLabel(m),
+          m.releaseDate ? (
+            <span className="ml-auto shrink-0 pl-2 text-[10.5px] font-normal tabular-nums text-ink-400">
+              {parseISODate(m.releaseDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+            </span>
+          ) : null,
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ProjectPicker(props: {
   rect: DOMRect;
   projects: Project[];
-  onPick: (id: ID) => void;
+  onPick: (id: ID, milestoneId?: ID) => void;
   onClose: () => void;
 }) {
   const [q, setQ] = useState('');
@@ -3874,9 +4086,13 @@ function ProjectPicker(props: {
     };
   }, [props]);
 
-  const filtered = props.projects.filter(p =>
-    p.name.toLowerCase().includes(q.trim().toLowerCase()),
-  );
+  const needle = q.trim().toLowerCase();
+  const filtered = props.projects.flatMap(p => {
+    const milestones = p.milestones ?? [];
+    if (p.name.toLowerCase().includes(needle)) return [{ project: p, milestones }];
+    const matching = milestones.filter(m => m.name.toLowerCase().includes(needle));
+    return matching.length ? [{ project: p, milestones: matching }] : [];
+  });
 
   const w = 280;
   const h = 340;
@@ -3898,7 +4114,10 @@ function ProjectPicker(props: {
           value={q}
           onChange={e => setQ(e.target.value)}
           onKeyDown={e => {
-            if (e.key === 'Enter' && filtered[0]) props.onPick(filtered[0].id);
+            if (e.key === 'Enter' && filtered[0]) {
+              const { project, milestones } = filtered[0];
+              props.onPick(project.id, project.name.toLowerCase().includes(needle) ? undefined : milestones[0]?.id);
+            }
           }}
           className="w-full rounded-md border border-ink-200 bg-white px-2.5 py-1.5 text-[13px] outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-200"
         />
@@ -3953,18 +4172,40 @@ function ProjectPicker(props: {
             No projects yet — add one in the Projects panel below.
           </div>
         )}
-        {filtered.map(p => (
-          <button
-            key={p.id}
-            className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[13px] text-ink-800 transition hover:bg-ink-100"
-            onClick={() => props.onPick(p.id)}
-          >
-            <span
-              className="inline-block h-3.5 w-3.5 rounded-full border border-black/5"
-              style={{ background: p.color }}
-            />
-            <span className="truncate">{p.name}</span>
-          </button>
+        {filtered.map(({ project: p, milestones }) => (
+          <div key={p.id}>
+            <button
+              className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[13px] text-ink-800 transition hover:bg-ink-100"
+              onClick={() => props.onPick(p.id)}
+              title={milestones.length ? `${p.name} (no specific milestone)` : p.name}
+            >
+              <span
+                className="inline-block h-3.5 w-3.5 shrink-0 rounded-full border border-black/5"
+                style={{ background: p.color }}
+              />
+              <span className="truncate">{p.name}</span>
+            </button>
+            {milestones.map(m => (
+              <button
+                key={m.id}
+                className="group/ms flex w-full items-center gap-2 rounded-md py-1 pl-[30px] pr-2.5 text-left text-[12px] text-ink-600 transition hover:bg-ink-100 hover:text-ink-900"
+                onClick={() => props.onPick(p.id, m.id)}
+                title={`${p.name} · ${milestoneLabel(m)}`}
+              >
+                <span
+                  className="inline-block h-2 w-2 shrink-0 rotate-45 rounded-[1px] border border-black/10"
+                  style={{ background: p.color }}
+                  aria-hidden
+                />
+                <span className="truncate">{milestoneLabel(m)}</span>
+                {m.releaseDate && (
+                  <span className="ml-auto shrink-0 pl-2 text-[10.5px] tabular-nums text-ink-400">
+                    {parseISODate(m.releaseDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
         ))}
       </div>
     </div>

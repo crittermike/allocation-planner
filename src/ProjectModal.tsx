@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { replaceSearchParam, searchParam } from './router';
-import { LoadingScope, ScopePanel, scopeSourceFor, type ScopeStatus } from './ScopePanel';
+import { milestoneLabel } from './milestones';
+import { LoadingScope, ScopePanel, scopeSourceFor, type FoundMilestone, type ScopeStatus } from './ScopePanel';
 import { hadScope, rememberScope, useScopeConfig } from './scopeApi';
-import type { Person, Project } from './types';
+import type { Milestone, Person, Project } from './types';
 
 /** Chip-style EM values offered in the picker. Must stay in sync with the
  *  EM_CHIPS used in Capacity.tsx (the picker logic mirrors what's there). */
@@ -27,27 +28,29 @@ const fmtWk = (n: number): string => {
   return r % 1 === 0 ? `${r}` : parseFloat(r.toFixed(2)).toString();
 };
 
-export function ReleaseDatePicker({ project, onChange }: {
-  project: Project;
+export function ReleaseDatePicker({ value, name, onChange, title = "The date you've communicated this project will ship" }: {
+  value: string | undefined;
+  /** What ships on this date, for accessible labels. */
+  name: string;
   onChange: (date: string | undefined) => void;
+  title?: string;
 }) {
-  const name = project.name || 'Untitled project';
   return (
     <div className="flex h-8 w-full min-w-[174px] max-w-[220px] items-center rounded-md border border-ink-200 bg-white transition-colors hover:border-ink-300 focus-within:border-brand-400 focus-within:ring-2 focus-within:ring-brand-200">
       <input
         type="date"
         min="0001-01-01"
         max="9999-12-31"
-        value={project.releaseDate ?? ''}
+        value={value ?? ''}
         aria-label={`Release date for ${name}`}
-        title="The date you've communicated this project will ship"
+        title={title}
         onChange={e => {
           if (!e.currentTarget.reportValidity()) return;
           onChange(e.currentTarget.value || undefined);
         }}
         className="h-full min-w-0 flex-1 bg-transparent px-2 text-[12px] tabular-nums text-ink-700 outline-none"
       />
-      {project.releaseDate && (
+      {value && (
         <button
           type="button"
           onClick={() => onChange(undefined)}
@@ -210,6 +213,130 @@ function EmPicker({
 }
 
 /* ============================================================ */
+/* Milestones                                                    */
+/* ============================================================ */
+
+function MilestonesSection(props: {
+  project: Project;
+  /** GitHub milestones from scope tracking, offered for import. */
+  found: FoundMilestone[];
+  assignedByMilestone: Record<string, number>;
+  onAdd: (items: Omit<Milestone, 'id'>[]) => void;
+  onUpdate: (milestoneId: string, patch: Partial<Omit<Milestone, 'id'>>) => void;
+  onRemove: (milestoneId: string) => void;
+}) {
+  const { project } = props;
+  const milestones = project.milestones ?? [];
+  const known = new Set(milestones.map(m => m.url).filter(Boolean));
+  const importable = props.found.filter(f => !known.has(f.url));
+  const listRef = useRef<HTMLUListElement>(null);
+  const focusNew = useRef(false);
+  useEffect(() => {
+    if (!focusNew.current) return;
+    focusNew.current = false;
+    const inputs = listRef.current?.querySelectorAll<HTMLInputElement>('input[data-milestone-name]');
+    inputs?.[inputs.length - 1]?.focus();
+  }, [milestones.length]);
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-baseline gap-2">
+        <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-500">Milestones</span>
+        <span className="text-[10px] text-ink-400">— assign people to them on the chart</span>
+        <span className="flex-1" />
+        {importable.length > 0 && (
+          <button
+            type="button"
+            onClick={() => props.onAdd(importable.map(f => ({ name: f.name, url: f.url })))}
+            title={`Add from GitHub:\n${importable.map(f => f.name).join('\n')}`}
+            className="inline-flex h-6 shrink-0 items-center gap-1 rounded-full border border-brand-200 bg-brand-50 px-2.5 text-[11px] font-semibold text-brand-700 transition hover:bg-brand-100"
+          >
+            + {importable.length} from GitHub
+          </button>
+        )}
+      </div>
+      {milestones.length > 0 && (
+        <ul ref={listRef} className="flex flex-col gap-1.5">
+          {milestones.map(m => {
+            const label = milestoneLabel(m);
+            const weeks = props.assignedByMilestone[m.id] ?? 0;
+            return (
+              <li key={m.id} className="flex items-center gap-1.5">
+                <span
+                  className="inline-block h-2 w-2 shrink-0 rotate-45 rounded-[1px] border border-black/10"
+                  style={{ background: project.color }}
+                  aria-hidden
+                />
+                <input
+                  data-milestone-name
+                  value={m.name}
+                  onChange={e => props.onUpdate(m.id, { name: e.target.value })}
+                  placeholder="Milestone name"
+                  aria-label="Milestone name"
+                  className="h-8 min-w-0 flex-1 rounded-md border border-ink-200 bg-white px-2.5 text-[12.5px] text-ink-800 outline-none transition hover:border-ink-300 focus:border-brand-400 focus:ring-2 focus:ring-brand-200"
+                />
+                <div className="w-[150px] shrink-0">
+                  <ReleaseDatePicker
+                    value={m.releaseDate}
+                    name={`${project.name || 'Untitled project'} · ${label}`}
+                    title="The date you've communicated this milestone will ship"
+                    onChange={releaseDate => props.onUpdate(m.id, { releaseDate })}
+                  />
+                </div>
+                <span
+                  className={'w-10 shrink-0 text-right text-[10.5px] tabular-nums ' + (weeks ? 'text-ink-500' : 'text-ink-300')}
+                  title={`${weeks} assignment-week${weeks === 1 ? '' : 's'} planned on this milestone`}
+                >
+                  {weeks} wk
+                </span>
+                {m.url ? (
+                  <a
+                    href={m.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title={`Open ${m.url}`}
+                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-400 transition hover:bg-brand-50 hover:text-brand-600"
+                  >
+                    ↗
+                  </a>
+                ) : (
+                  <span className="w-7 shrink-0" aria-hidden />
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (weeks > 0 && !confirm(`Remove milestone "${label}"?\n\nIts ${weeks} assignment-week${weeks === 1 ? '' : 's'} stay on the chart as plain "${project.name}" work.`)) return;
+                    props.onRemove(m.id);
+                  }}
+                  title="Remove milestone"
+                  aria-label={`Remove milestone ${label}`}
+                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-400 transition hover:bg-rose-50 hover:text-rose-600"
+                >
+                  ×
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <button
+        type="button"
+        onClick={() => {
+          focusNew.current = true;
+          props.onAdd([{ name: '' }]);
+        }}
+        className="self-start rounded-md px-1.5 py-1 text-[12px] font-medium text-brand-600 transition hover:bg-brand-50"
+      >
+        + Add milestone
+      </button>
+      {milestones.some(m => m.releaseDate) && (
+        <p className="text-[11.5px] text-ink-500">Milestone ship dates show on the chart's Releases row.</p>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================ */
 /* ProjectEditModal                                              */
 /* ============================================================ */
 
@@ -226,6 +353,11 @@ export function ProjectEditModal(props: {
   slug?: string;
   /** All projects in the plan, so milestones can show linked projects' release dates. */
   projects?: Project[];
+  onAddMilestones: (items: Omit<Milestone, 'id'>[]) => void;
+  onUpdateMilestone: (milestoneId: string, patch: Partial<Omit<Milestone, 'id'>>) => void;
+  onRemoveMilestone: (milestoneId: string) => void;
+  /** Assignment-weeks per milestone of this project. */
+  assignedByMilestone?: Record<string, number>;
 }) {
   const { project, planned, weeksPerEM } = props;
   const swatchRef = useRef<HTMLButtonElement>(null);
@@ -244,6 +376,12 @@ export function ProjectEditModal(props: {
     replaceSearchParam('milestone', next == null ? null : String(next));
   }, []);
   const openedUrl = useRef(props.project.url);
+  const [foundMilestones, setFoundMilestones] = useState<{ url: string; items: FoundMilestone[] } | null>(null);
+  const scopeUrl = props.slug ? scopeSourceFor(props.project.url, scopeConfig)?.issue.url : undefined;
+  const onMilestonesFound = useCallback(
+    (items: FoundMilestone[]) => { if (scopeUrl) setFoundMilestones({ url: scopeUrl, items }); },
+    [scopeUrl],
+  );
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') props.onClose(); };
@@ -380,11 +518,21 @@ export function ProjectEditModal(props: {
           <div className="flex flex-col gap-1">
             <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-500">Release date</span>
             <ReleaseDatePicker
-              project={project}
+              value={project.releaseDate}
+              name={project.name || 'Untitled project'}
               onChange={releaseDate => props.onUpdate({ releaseDate })}
             />
             <p className="text-[11.5px] text-ink-500">The date you've communicated this project will ship.</p>
           </div>
+
+          <MilestonesSection
+            project={project}
+            found={trackedUrl && foundMilestones?.url === trackedUrl ? foundMilestones.items : []}
+            assignedByMilestone={props.assignedByMilestone ?? {}}
+            onAdd={props.onAddMilestones}
+            onUpdate={props.onUpdateMilestone}
+            onRemove={props.onRemoveMilestone}
+          />
 
           <label className="flex flex-col gap-1">
             <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-500">URL (e.g. tracking issue)</span>
@@ -435,6 +583,8 @@ export function ProjectEditModal(props: {
               onStatusChange={onScopeStatus}
               milestone={linkMilestone}
               onMilestoneChange={onMilestoneChange}
+              milestones={project.milestones}
+              onMilestonesFound={onMilestonesFound}
             />
           </div>
         )}

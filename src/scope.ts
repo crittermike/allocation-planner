@@ -29,6 +29,8 @@ export type ScopeIssue = {
   number: number;
   title: string;
   url: string;
+  /** GitHub issue type; only Batch issues are milestone containers. */
+  issueType?: string | null;
   /** Immediate parent: the tracked issue's ID for direct sub-issues. */
   parentId: string;
   state: 'open' | 'closed';
@@ -258,14 +260,54 @@ export function shortLabel(issue: { number: number; title: string }): string {
   return m ? `M${m[1]}` : `#${issue.number}`;
 }
 
+/** A leading bracketed tag, like "[3232 M1]" in "[3232 M1] Code Security risk assessment". */
+const TITLE_TAG = /^\[([^\]]*)\]\s*(?:[:\-–—]\s*)?/;
+
+/** Words shared by the start of every list, keeping at least `keep` words in each. */
+function commonLeadingWords(lists: string[][], keep: number, accept: (count: number) => boolean = () => true): number {
+  let common = 0;
+  while (
+    lists.every(w => w.length >= common + 1 + keep && w[common].toLowerCase() === lists[0][common].toLowerCase())
+  ) common++;
+  while (common > 0 && !accept(common)) common--;
+  return common;
+}
+
+/** Whether dropping these words leaves every bracket or parenthesis they open closed. */
+function balanced(words: string[]): boolean {
+  let depth = 0;
+  for (const ch of words.join(' ')) {
+    if (ch === '[' || ch === '(') depth++;
+    else if (ch === ']' || ch === ')') depth--;
+    if (depth < 0) return false;
+  }
+  return depth === 0;
+}
+
 /** Display names for an epic's milestones: "Milestone 4" shortened to "M4", and
- *  words every milestone title starts with (like the epic's name) dropped. */
+ *  words every milestone title starts with (like the epic's name) dropped.
+ *  Leading tags such as "[3232 M1]" lose only their shared words ("M1: …"), and
+ *  dropped words never split a bracketed or parenthesized group. */
 export function milestoneNames(titles: string[]): string[] {
   const short = titles.map(t => t.replace(/\bMilestone\s+(\d+)\b/i, 'M$1').trim());
   if (short.length < 2) return short;
+
+  const tagged = short.map(t => {
+    const m = t.match(TITLE_TAG);
+    return m ? { tag: m[1].trim().split(/\s+/).filter(Boolean), rest: t.slice(m[0].length).trim() } : null;
+  });
+  if (tagged.every(x => x !== null)) {
+    const parts = tagged as { tag: string[]; rest: string }[];
+    const common = commonLeadingWords(parts.map(p => p.tag), 0);
+    return parts.map(({ tag, rest }, i) => {
+      const left = tag.slice(common).join(' ');
+      if (!left) return rest || short[i];
+      return rest ? `${left}: ${rest}` : left;
+    });
+  }
+
   const words = short.map(t => t.split(/\s+/));
-  let common = 0;
-  while (words.every(w => w.length > common + 1 && w[common].toLowerCase() === words[0][common].toLowerCase())) common++;
+  const common = commonLeadingWords(words, 1, n => balanced(words[0].slice(0, n)));
   return words.map(w => w.slice(common).join(' '));
 }
 
@@ -539,7 +581,7 @@ function referencePace(milestone: ScopeIssue, s: ScopeSummary): ReferencePace | 
 const IN_PROGRESS: ForecastStatus[] = ['converging', 'not-converging', 'just-started'];
 const ACTIVE: ForecastStatus[] = [...IN_PROGRESS, 'too-early', 'no-progress'];
 
-/** For an epic (several sub-issues that have their own sub-issues), one view per
+/** For an epic with Batch sub-issues, one view per
  *  milestone; a combined forecast would mix finished, active, and unstarted work.
  *  Otherwise, a single view of the whole tree. */
 export function analyzeScope(t: ScopeTracking): ScopeAnalysis {
@@ -557,18 +599,15 @@ export function analyzeScope(t: ScopeTracking): ScopeAnalysis {
   const groups = new Map<string, ScopeIssue>();
   for (const s of snaps) {
     for (const issue of s.byId.values()) {
-      if (issue.parentId === rootId && s.parents.has(issue.id)) groups.set(issue.id, issue);
+      if (issue.parentId === rootId && issue.issueType === 'Batch') groups.set(issue.id, issue);
     }
   }
   const groupOf = (issue: ScopeIssue, snap: Indexed) => {
     const top = topLevelId(issue, snap, rootId);
     return top && groups.has(top) ? top : null;
   };
-  // Only an epic gets a per-milestone breakdown: several rollup sub-issues
-  // holding most of the work. A task split into sub-issues isn't a milestone.
-  const latestLeaves = [...scopeOf(latest, inside).values()];
-  const grouped = latestLeaves.filter(issue => groupOf(issue, latest)).length;
-  if (groups.size < 2 || grouped * 2 < latestLeaves.length) {
+  const latestLeaves = [...scopeOf(latest, inside).values()].filter(issue => !groups.has(issue.id));
+  if (groups.size === 0) {
     const summary = summarize(snaps, inside, asOf, t.reference ?? []);
     return {
       views: [{ id: ALL_VIEW, label: 'All sub-issues', issue: null, summary }],
@@ -587,7 +626,7 @@ export function analyzeScope(t: ScopeTracking): ScopeAnalysis {
   };
   const milestones = [...groups.values()].sort((a, b) => position(a.id) - position(b.id));
   const snapsFor = (g: ScopeIssue) => snaps.slice(Math.max(0, snaps.findIndex(s => s.byId.has(g.id))));
-  const memberOf = (g: ScopeIssue): Member => (issue, snap) => groupOf(issue, snap) === g.id;
+  const memberOf = (g: ScopeIssue): Member => (issue, snap) => issue.id !== g.id && groupOf(issue, snap) === g.id;
 
   // Finished milestones set the pace for ones that just started.
   const firstPass = milestones.map(g => ({ g, summary: summarize(snapsFor(g), memberOf(g), asOf, []) }));
@@ -663,6 +702,7 @@ export type HistoryIssue = {
   number: number;
   title: string;
   url: string;
+  issueType?: string | null;
   createdAt: string;
   state: 'open' | 'closed';
   closeReason?: CloseReason;
@@ -837,6 +877,7 @@ export function trackingFromHistory(
         id: info.id,
         number: info.number,
         title: info.title,
+        issueType: info.issueType,
         url: info.url,
         parentId,
         state: s.state,

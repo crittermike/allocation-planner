@@ -114,6 +114,7 @@ class DemoTree {
       number,
       title,
       url: DEMO_ISSUE_URL + number,
+      issueType: MILESTONES.includes(number) ? 'Batch' : null,
       parentId: parent ? this.get(parent).id : this.rootId,
       state: opts.closed ? 'closed' : 'open',
       ...(opts.closed ? { closeReason: 'completed' as const } : {}),

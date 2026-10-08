@@ -57,6 +57,7 @@ const EVENT_FIELDS = `
 
 const ISSUE_FIELDS = `
   id number title url createdAt state stateReason closedAt
+  issueType { name }
   subIssues(first: 100) { totalCount pageInfo { hasNextPage endCursor } nodes { id } }
   timelineItems(first: 100, itemTypes: [${EVENT_TYPES}]) {
     pageInfo { hasNextPage endCursor }
@@ -148,7 +149,7 @@ async function fetchHistory(token, ref) {
       issue(number: $number) {
         id number
         parent { id subIssuesSummary { total } }
-        subIssues(first: 100) { nodes { subIssuesSummary { total } } }
+        subIssues(first: 100) { nodes { issueType { name } } }
       }
     }
   }`, { owner: ref.owner, name: ref.repo, number: ref.number });
@@ -159,7 +160,7 @@ async function fetchHistory(token, ref) {
     return { unreadable: true };
   }
 
-  const isEpic = tracked.subIssues.nodes.filter(n => n && n.subIssuesSummary.total > 0).length >= 2;
+  const isEpic = tracked.subIssues.nodes.some(n => n?.issueType?.name === 'Batch');
   const parent = tracked.parent;
   const contextId = parent && !isEpic && parent.subIssuesSummary.total <= MAX_CONTEXT_CHILDREN ? parent.id : tracked.id;
 
@@ -185,6 +186,7 @@ async function fetchHistory(token, ref) {
           id: node.id,
           number: node.number,
           title: node.title,
+          issueType: node.issueType?.name ?? null,
           url: node.url,
           createdAt: node.createdAt,
           state: node.state === 'CLOSED' ? 'closed' : 'open',
@@ -253,6 +255,8 @@ export function createScopeService({ db, token, repos }) {
 
   const allowed = (repos ?? []).map(r => r.trim().toLowerCase()).filter(Boolean);
   const inflight = new Map();
+  const lacksIssueTypes = (row) => row?.history
+    && JSON.parse(row.history).issues.some(issue => issue.issueType === undefined);
 
   const refresh = (ref) => {
     const key = issueKey(ref);
@@ -300,7 +304,8 @@ export function createScopeService({ db, token, repos }) {
       const key = issueKey(ref);
       let row = getRow.get(key);
       const age = row ? Date.now() - row.attempted_at : Infinity;
-      if (!row || (!row.history && age > MIN_REFRESH_MS)) {
+      if (!row || (!row.history && age > MIN_REFRESH_MS)
+        || (lacksIssueTypes(row) && (!row.error || age > MIN_REFRESH_MS))) {
         await refresh(ref);
         row = getRow.get(key);
       } else if (row.history && age > STALE_MS && !inflight.has(key)) {
@@ -313,7 +318,8 @@ export function createScopeService({ db, token, repos }) {
     async refresh(ref) {
       const key = issueKey(ref);
       const row = getRow.get(key);
-      if (!row || Date.now() - row.attempted_at > MIN_REFRESH_MS || inflight.has(key)) await refresh(ref);
+      if (!row || Date.now() - row.attempted_at > MIN_REFRESH_MS
+        || (lacksIssueTypes(row) && !row.error) || inflight.has(key)) await refresh(ref);
       return respond(getRow.get(key), false);
     },
   };

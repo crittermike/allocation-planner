@@ -11,7 +11,8 @@ Not really a Gantt chart (no time-spanning bars, no dependencies) — it's a cap
 - People, projects, and DRI (lead) marking
 - Project release dates with an inline date picker and color-coded weekly release markers
 - Two-week iterations with auto-computed working-week labels
-- Drag-and-drop or click-to-pick assignment
+- Drag-and-drop or click-to-pick assignment, to a whole project or one of its milestones
+- Project milestones with their own ship dates, importable from a GitHub epic's milestone sub-issues
 - Estimated vs. planned eng-week tracking per project
 - Scope tracking for projects linked to GitHub issues: milestones, scope creep, and finish forecasts (optional; needs a GitHub token)
 - Shareable project links: while a project is open, the address bar links to it (`/<plan>/p/<project-id>`)
@@ -63,7 +64,7 @@ Cost: ~$2-3/month for a `shared-cpu-1x` 256MB machine + 1GB volume, kept warm fo
 
 ## GitHub scope tracking
 
-When a project's URL is a GitHub issue that the server can read, the project editor shows how its scope changed over time: work finished, new issues added after work started (scope creep), and when the remaining work should finish at none, the current, or double the creep rate. For an epic whose sub-issues are milestones, it shows one row per milestone. A milestone's target is the release date of the project linked to that milestone's issue.
+When a project's URL is a GitHub issue that the server can read, the project editor shows how its scope changed over time: work finished, new issues added after work started (scope creep), and when the remaining work should finish at none, the current, or double the creep rate. Only direct sub-issues with the GitHub issue type **Batch** appear as milestones under an epic or are offered for milestone import. Other sub-issues remain counted as work outside milestones. A milestone's target is the ship date of the project's own milestone for that issue, or else the release date of a project linked to that milestone's issue.
 
 History comes from GitHub's record of sub-issues being added, removed, closed, and reopened, so a newly linked issue shows its full history right away. Counting rules:
 
@@ -92,9 +93,12 @@ Dev builds also show fictional demo data for `acme-demo/invoice-exports` issue U
 type State = {
   title: string;
   people: { id; name }[];
-  projects: { id; name; color; driId; url?; releaseDate? /* YYYY-MM-DD */; estimateEM?; priority?; bigRock?; descoped?; notes? }[];
+  projects: {
+    id; name; color; driId; url?; releaseDate? /* YYYY-MM-DD */; estimateEM?; priority?; bigRock?; descoped?; notes?;
+    milestones?: { id; name; releaseDate? /* YYYY-MM-DD */; url? }[];
+  }[];
   iterations: { id; startDate /* YYYY-MM-DD Monday */; goal? }[];
-  assignments: { id; personId; weekId /* `${iterId}:0|1` */; projectId }[];
+  assignments: { id; personId; weekId /* `${iterId}:0|1` */; projectId; milestoneId? }[];
   quarter?: { engineers; weeksInQuarter; firstResponderWeeks; weeksPerEM; buffers: { id; label; pct; note? }[]; engineersNote? };
 };
 ```
@@ -114,6 +118,17 @@ editor. Active projects appear above the matching week's notes in either schedul
 orientation, including in collapsed iterations. Weeks include Monday through
 Sunday, so weekend releases stay with that week. Dates outside the plan's
 iterations remain in the projects table and markdown export.
+
+## Milestones
+
+Add milestones in the project editor. For a project linked to a GitHub epic, "+ N
+from GitHub" adds the epic's milestone sub-issues (adding them again is a no-op).
+In the chart's picker, a project's milestones are listed under it; choose the
+project itself for work that isn't tied to one milestone. Hover an assignment and
+click ◆ to move it to a different milestone. Dragging, moving, and extending an
+assignment keep its milestone. A milestone's ship date shows on the Releases row
+as "Project · Milestone" and is the target for that milestone in the scope view.
+Capacity and planned EM still count milestone work toward its project, once.
 
 ## License
 

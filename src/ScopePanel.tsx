@@ -30,7 +30,7 @@ import {
 } from './scope';
 import { requestScope, type ScopeConfig, type ScopeResponse } from './scopeApi';
 import { DEMO_SCENARIOS, demoScope, isDemoIssue, type DemoScenario } from './scopeDemo';
-import type { Project } from './types';
+import type { Milestone, Project } from './types';
 
 export type ScopeSource = 'demo' | 'github';
 
@@ -209,7 +209,14 @@ type PanelProps = {
   /** Milestone issue number to select first, e.g. from a shared link. */
   milestone?: number;
   onMilestoneChange?: (milestone: number | null) => void;
+  /** This project's own milestones. Their ship dates are the targets of matching GitHub milestones. */
+  milestones?: Milestone[];
+  /** Reports the epic's GitHub milestones, so they can be added as plannable milestones. */
+  onMilestonesFound?: (found: FoundMilestone[]) => void;
 };
+
+/** A GitHub milestone sub-issue, with its display name. */
+export type FoundMilestone = { name: string; url: string };
 
 /** Whether there's anything to show: sub-issues or a problem worth reporting ("content"). */
 export type ScopeStatus = 'loading' | 'content' | 'none';
@@ -279,7 +286,7 @@ function Unreadable({ issue, at }: { issue: GitHubIssueRef; at: string }) {
 /** Demo scenario picked per URL, kept while the page is open. */
 const chosenScenarios = new Map<string, DemoScenario>();
 
-function DemoScope({ issue, releaseDate, projects, onStatusChange, milestone, onMilestoneChange }: PanelProps) {
+function DemoScope({ issue, releaseDate, projects, onStatusChange, milestone, onMilestoneChange, milestones, onMilestonesFound }: PanelProps) {
   const [scenario, setScenario] = useState<DemoScenario>(() => chosenScenarios.get(issue.url) ?? 'normal');
   const load = useMemo(() => demoScope(issue, scenario), [issue.url, scenario]);
   // The scenario switcher stays reachable even when a scenario has no sub-issues.
@@ -322,6 +329,8 @@ function DemoScope({ issue, releaseDate, projects, onStatusChange, milestone, on
           projects={projects}
           milestone={milestone}
           onMilestoneChange={onMilestoneChange}
+          milestones={milestones}
+          onMilestonesFound={onMilestonesFound}
         />
       )}
     </PanelFrame>
@@ -345,6 +354,8 @@ function GitHubScope({
   onStatusChange,
   milestone,
   onMilestoneChange,
+  milestones,
+  onMilestonesFound,
 }: PanelProps) {
   const cacheKey = `${slug}\n${issue.url}`;
   const [response, setResponse] = useState<ScopeResponse | null>(() => lastResponses.get(cacheKey) ?? null);
@@ -444,19 +455,32 @@ function GitHubScope({
           projects={projects}
           milestone={milestone}
           onMilestoneChange={onMilestoneChange}
+          milestones={milestones}
+          onMilestonesFound={onMilestonesFound}
         />
       )}
     </PanelFrame>
   );
 }
 
-function ScopeDetails({ tracking, issue, releaseDate, projects, milestone, onMilestoneChange }: {
+function ScopeDetails({
+  tracking,
+  issue,
+  releaseDate,
+  projects,
+  milestone,
+  onMilestoneChange,
+  milestones,
+  onMilestonesFound,
+}: {
   tracking: ScopeTracking;
   issue: GitHubIssueRef;
   releaseDate?: string;
   projects: Project[];
   milestone?: number;
   onMilestoneChange?: (milestone: number | null) => void;
+  milestones?: Milestone[];
+  onMilestonesFound?: (found: FoundMilestone[]) => void;
 }) {
   const analysis = useMemo(() => analyzeScope(tracking), [tracking]);
   const [viewId, setViewId] = useState(
@@ -470,15 +494,26 @@ function ScopeDetails({ tracking, issue, releaseDate, projects, milestone, onMil
     const short = analysis.hasBreakdown ? milestoneNames(analysis.views.map(v => v.label)) : [];
     return new Map(analysis.views.map((v, i) => [v.id, short[i] ?? v.label]));
   }, [analysis]);
-  // Milestones get their release date from the planner project linked to them.
+  useEffect(() => {
+    if (!onMilestonesFound) return;
+    onMilestonesFound(analysis.hasBreakdown
+      ? analysis.views.flatMap(v => (v.issue ? [{ name: names.get(v.id) ?? v.label, url: v.issue.url }] : []))
+      : []);
+  }, [analysis, names, onMilestonesFound]);
+  // Milestones get their ship date from this project's matching milestone, or else
+  // from the planner project linked to them.
   const releaseByIssue = useMemo(() => {
-    const out = new Map<string, { date: string; name: string }>();
+    const out = new Map<string, { date: string; source: string }>();
     for (const p of projects) {
       const ref = parseGitHubIssueUrl(p.url);
-      if (ref && p.releaseDate) out.set(issueKey(ref), { date: p.releaseDate, name: p.name });
+      if (ref && p.releaseDate) out.set(issueKey(ref), { date: p.releaseDate, source: `release date of ${p.name.trim() || 'a linked project'}` });
+    }
+    for (const m of milestones ?? []) {
+      const ref = parseGitHubIssueUrl(m.url);
+      if (ref && m.releaseDate) out.set(issueKey(ref), { date: m.releaseDate, source: "this milestone's ship date" });
     }
     return out;
-  }, [projects]);
+  }, [projects, milestones]);
 
   const view = analysis.views.find(v => v.id === viewId) ?? analysis.views[0];
   if (!view) return <p className="text-[12.5px] text-ink-500">No sub-issues found.</p>;
@@ -487,7 +522,7 @@ function ScopeDetails({ tracking, issue, releaseDate, projects, milestone, onMil
     if (!analysis.hasBreakdown) return releaseDate ? { date: releaseDate, source: "this project's release date" } : null;
     const ref = v.issue ? parseGitHubIssueUrl(v.issue.url) : null;
     const hit = ref ? releaseByIssue.get(issueKey(ref)) : undefined;
-    return hit ? { date: hit.date, source: `release date of ${hit.name.trim() || 'a linked project'}` } : null;
+    return hit ? { date: hit.date, source: hit.source } : null;
   };
 
   return (
