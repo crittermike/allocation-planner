@@ -1,5 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
-import type { Person, Project } from './types';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { replaceSearchParam, searchParam } from './router';
+import { milestoneLabel } from './milestones';
+import { LoadingScope, ScopePanel, scopeSourceFor, type FoundMilestone, type ScopeStatus } from './ScopePanel';
+import { hadScope, rememberScope, useScopeConfig } from './scopeApi';
+import type { Milestone, Person, Project } from './types';
 
 /** Chip-style EM values offered in the picker. Must stay in sync with the
  *  EM_CHIPS used in Capacity.tsx (the picker logic mirrors what's there). */
@@ -24,27 +28,31 @@ const fmtWk = (n: number): string => {
   return r % 1 === 0 ? `${r}` : parseFloat(r.toFixed(2)).toString();
 };
 
-export function ReleaseDatePicker({ project, onChange }: {
-  project: Project;
+export function ReleaseDatePicker({ value, name, onChange, title = "The date you've communicated this project will ship", compact }: {
+  value: string | undefined;
+  /** Fill a narrow fixed-width parent instead of keeping the default minimum width. */
+  compact?: boolean;
+  /** What ships on this date, for accessible labels. */
+  name: string;
   onChange: (date: string | undefined) => void;
+  title?: string;
 }) {
-  const name = project.name || 'Untitled project';
   return (
-    <div className="flex h-8 w-full min-w-[174px] max-w-[220px] items-center rounded-md border border-ink-200 bg-white transition-colors hover:border-ink-300 focus-within:border-brand-400 focus-within:ring-2 focus-within:ring-brand-200">
+    <div className={(compact ? 'w-full ' : 'w-full min-w-[174px] max-w-[220px] ') + 'flex h-8 items-center rounded-md border border-ink-200 bg-white transition-colors hover:border-ink-300 focus-within:border-brand-400 focus-within:ring-2 focus-within:ring-brand-200'}>
       <input
         type="date"
         min="0001-01-01"
         max="9999-12-31"
-        value={project.releaseDate ?? ''}
+        value={value ?? ''}
         aria-label={`Release date for ${name}`}
-        title="The date you've communicated this project will ship"
+        title={title}
         onChange={e => {
           if (!e.currentTarget.reportValidity()) return;
           onChange(e.currentTarget.value || undefined);
         }}
         className="h-full min-w-0 flex-1 bg-transparent px-2 text-[12px] tabular-nums text-ink-700 outline-none"
       />
-      {project.releaseDate && (
+      {value && (
         <button
           type="button"
           onClick={() => onChange(undefined)}
@@ -207,6 +215,119 @@ function EmPicker({
 }
 
 /* ============================================================ */
+/* Milestones                                                    */
+/* ============================================================ */
+
+function MilestonesSection(props: {
+  project: Project;
+  assignedByMilestone: Record<string, number>;
+  onAdd: (items: Omit<Milestone, 'id'>[]) => void;
+  onUpdate: (milestoneId: string, patch: Partial<Omit<Milestone, 'id'>>) => void;
+  onRemove: (milestoneId: string) => void;
+}) {
+  const { project } = props;
+  const milestones = project.milestones ?? [];
+  const listRef = useRef<HTMLUListElement>(null);
+  const focusNew = useRef(false);
+  useEffect(() => {
+    if (!focusNew.current) return;
+    focusNew.current = false;
+    const inputs = listRef.current?.querySelectorAll<HTMLInputElement>('input[data-milestone-name]');
+    inputs?.[inputs.length - 1]?.focus();
+  }, [milestones.length]);
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-baseline gap-2">
+        <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-500">Milestones</span>
+        <span className="flex-1" />
+      </div>
+      {milestones.length > 0 && (
+        <ul ref={listRef} className="flex flex-col gap-1.5">
+          {milestones.map(m => {
+            const label = milestoneLabel(m);
+            const weeks = props.assignedByMilestone[m.id] ?? 0;
+            return (
+              <li key={m.id} className="flex items-center gap-2">
+                <span
+                  className="inline-block h-2 w-2 shrink-0 rotate-45 rounded-[1px] border border-black/10"
+                  style={{ background: project.color }}
+                  aria-hidden
+                />
+                <input
+                  data-milestone-name
+                  value={m.name}
+                  onChange={e => props.onUpdate(m.id, { name: e.target.value })}
+                  readOnly={m.github && !m.goneFromGitHub}
+                  title={m.goneFromGitHub
+                    ? 'Not on GitHub anymore: no longer a Batch sub-issue of the epic. Kept so its ship date and assignments are not lost; remove it when you are done with it.'
+                    : m.github ? `${m.name} (synced from GitHub)` : m.name || undefined}
+                  placeholder="Milestone name"
+                  aria-label="Milestone name"
+                  className={(m.goneFromGitHub ? 'line-through decoration-amber-500 !border-amber-300 !bg-amber-50 ' : '') + (m.github && !m.goneFromGitHub ? 'bg-ink-50 ' : '') + "h-8 min-w-0 flex-1 rounded-md border border-ink-200 bg-white px-2.5 text-[12.5px] text-ink-800 outline-none transition hover:border-ink-300 focus:border-brand-400 focus:ring-2 focus:ring-brand-200"}
+                />
+                <div className="w-[148px] shrink-0">
+                  <ReleaseDatePicker
+                    compact
+                    value={m.releaseDate}
+                    name={`${project.name || 'Untitled project'} · ${label}`}
+                    title="The date you've communicated this milestone will ship"
+                    onChange={releaseDate => props.onUpdate(m.id, { releaseDate })}
+                  />
+                </div>
+                <span
+                  className={'w-9 shrink-0 whitespace-nowrap text-right text-[11px] tabular-nums ' + (weeks ? 'text-ink-500' : 'text-ink-300')}
+                  title={`${weeks} assignment-week${weeks === 1 ? '' : 's'} planned on this milestone`}
+                >
+                  {weeks} wk
+                </span>
+                <div className="flex shrink-0 items-center gap-0.5">
+                {m.url ? (
+                  <a
+                    href={m.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title={`Open ${m.url}`}
+                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-400 transition hover:bg-brand-50 hover:text-brand-600"
+                  >
+                    ↗
+                  </a>
+                ) : (
+                  <span className="w-7 shrink-0" aria-hidden />
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (weeks > 0 && !confirm(`Remove milestone "${label}"?\n\nIts ${weeks} assignment-week${weeks === 1 ? '' : 's'} stay on the chart as plain "${project.name}" work.`)) return;
+                    props.onRemove(m.id);
+                  }}
+                  title="Remove milestone"
+                  aria-label={`Remove milestone ${label}`}
+                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-400 transition hover:bg-rose-50 hover:text-rose-600"
+                >
+                  ×
+                </button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <button
+        type="button"
+        onClick={() => {
+          focusNew.current = true;
+          props.onAdd([{ name: '' }]);
+        }}
+        className="self-start rounded-md px-1.5 py-1 text-[12px] font-medium text-brand-600 transition hover:bg-brand-50"
+      >
+        + Add milestone
+      </button>
+    </div>
+  );
+}
+
+/* ============================================================ */
 /* ProjectEditModal                                              */
 /* ============================================================ */
 
@@ -219,11 +340,44 @@ export function ProjectEditModal(props: {
   onRemove: () => void;
   onClose: () => void;
   isNew?: boolean;
+  /** The plan's slug, for loading scope from the server. */
+  slug?: string;
+  /** All projects in the plan, so milestones can show linked projects' release dates. */
+  projects?: Project[];
+  onAddMilestones: (items: Omit<Milestone, 'id'>[]) => void;
+  /** Sync the project's milestones with those found on its GitHub epic. */
+  onSyncMilestones: (found: FoundMilestone[]) => void;
+  onUpdateMilestone: (milestoneId: string, patch: Partial<Omit<Milestone, 'id'>>) => void;
+  onRemoveMilestone: (milestoneId: string) => void;
+  /** Assignment-weeks per milestone of this project. */
+  assignedByMilestone?: Record<string, number>;
 }) {
   const { project, planned, weeksPerEM } = props;
   const swatchRef = useRef<HTMLButtonElement>(null);
   const [colorOpen, setColorOpen] = useState(false);
   const [colorRect, setColorRect] = useState<DOMRect | null>(null);
+  const scopeConfig = useScopeConfig();
+  const [scope, setScope] = useState<{ url: string; status: ScopeStatus } | null>(null);
+  const onScopeStatus = useCallback((status: ScopeStatus, url: string) => {
+    setScope({ url, status });
+    if (status !== 'loading') rememberScope(url, status === 'content');
+  }, []);
+  // Links can point at one milestone: /<slug>/p/<projectId>?milestone=<issue number>.
+  const [milestone, setMilestone] = useState(() => Number(searchParam('milestone')) || undefined);
+  const onMilestoneChange = useCallback((next: number | null) => {
+    setMilestone(next ?? undefined);
+    replaceSearchParam('milestone', next == null ? null : String(next));
+  }, []);
+  const openedUrl = useRef(props.project.url);
+  const scopeUrl = props.slug ? scopeSourceFor(props.project.url, scopeConfig)?.issue.url : undefined;
+  const latestScopeUrl = useRef(scopeUrl);
+  latestScopeUrl.current = scopeUrl;
+  const syncMilestones = useRef(props.onSyncMilestones);
+  syncMilestones.current = props.onSyncMilestones;
+  const onMilestonesFound = useCallback(
+    (items: FoundMilestone[]) => { if (scopeUrl && latestScopeUrl.current === scopeUrl) syncMilestones.current(items); },
+    [scopeUrl],
+  );
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') props.onClose(); };
@@ -244,15 +398,35 @@ export function ProjectEditModal(props: {
   } else if (plannedEM === 0) {
     badgeClass = 'bg-transparent text-ink-400 border-transparent';
   }
+  // Projects linked to a GitHub issue the planner can read get scope tracking automatically.
+  const tracked = props.slug ? scopeSourceFor(project.url, scopeConfig) : null;
+  const trackedUrl = tracked?.issue.url;
+  const scopeStatus: ScopeStatus = trackedUrl && scope?.url === trackedUrl ? scope.status : 'loading';
+  // A link's milestone belongs to the issue the project pointed at when it opened.
+  const linkMilestone = project.url === openedUrl.current ? milestone : undefined;
+  // Open wide right away for issues that showed scope before, instead of growing once loaded.
+  const expectScope = useMemo(
+    () => !!trackedUrl && (linkMilestone != null || hadScope(trackedUrl)),
+    [trackedUrl, linkMilestone],
+  );
+  const wide = !!tracked && (scopeStatus === 'content' || (scopeStatus === 'loading' && expectScope));
 
   return (
     <div
       className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-ink-900/40 px-4 py-12 backdrop-blur-sm"
       onMouseDown={e => { if (e.target === e.currentTarget) props.onClose(); }}
     >
-      <div className="anim-pop-in w-full max-w-lg rounded-2xl border border-ink-200 bg-white shadow-2xl">
-        <div className="flex items-center justify-between gap-3 border-b border-ink-100 px-5 py-3.5">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-500">Project</span>
+      <div
+        className={
+          'anim-pop-in w-full rounded-2xl border border-ink-200 bg-white shadow-2xl ' +
+          (wide ? 'max-w-[1200px] lg:grid lg:grid-cols-[512px_minmax(0,1fr)]' : 'max-w-lg')
+        }
+      >
+        <div className="flex items-center justify-between gap-3 border-b border-ink-100 px-5 py-3.5 lg:col-span-2">
+          <div className="flex items-center gap-3">
+            <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-500">Project</span>
+            {tracked && scopeStatus === 'loading' && !wide && <LoadingScope />}
+          </div>
           <button
             type="button"
             onClick={props.onClose}
@@ -340,11 +514,19 @@ export function ProjectEditModal(props: {
           <div className="flex flex-col gap-1">
             <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-500">Release date</span>
             <ReleaseDatePicker
-              project={project}
+              value={project.releaseDate}
+              name={project.name || 'Untitled project'}
               onChange={releaseDate => props.onUpdate({ releaseDate })}
             />
-            <p className="text-[11.5px] text-ink-500">The date you've communicated this project will ship.</p>
           </div>
+
+          <MilestonesSection
+            project={project}
+            assignedByMilestone={props.assignedByMilestone ?? {}}
+            onAdd={props.onAddMilestones}
+            onUpdate={props.onUpdateMilestone}
+            onRemove={props.onRemoveMilestone}
+          />
 
           <label className="flex flex-col gap-1">
             <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-500">URL (e.g. tracking issue)</span>
@@ -382,7 +564,25 @@ export function ProjectEditModal(props: {
             />
           </label>
         </div>
-        <div className="flex items-center justify-between gap-2 border-t border-ink-100 bg-ink-50/40 px-5 py-3">
+        {tracked && props.slug && (
+          <div className={'min-w-0 border-t border-ink-100 px-5 py-5 lg:border-l lg:border-t-0' + (wide ? '' : ' hidden')}>
+            <ScopePanel
+              key={tracked.issue.url}
+              slug={props.slug}
+              issue={tracked.issue}
+              source={tracked.source}
+              releaseDate={project.releaseDate}
+              projects={props.projects ?? []}
+              settleMs={project.url === openedUrl.current ? 0 : undefined}
+              onStatusChange={onScopeStatus}
+              milestone={linkMilestone}
+              onMilestoneChange={onMilestoneChange}
+              milestones={project.milestones}
+              onMilestonesFound={onMilestonesFound}
+            />
+          </div>
+        )}
+        <div className="flex items-center justify-between gap-2 border-t border-ink-100 bg-ink-50/40 px-5 py-3 lg:col-span-2">
           {!props.isNew ? (
             <button
               type="button"

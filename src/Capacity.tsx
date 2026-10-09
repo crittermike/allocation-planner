@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { fmtNum, WEEKS_PER_EM, type CapacityInfo } from './capacityShared';
 import { ProjectEditModal, ReleaseDatePicker } from './ProjectModal';
+import { milestoneLabel } from './milestones';
 import type { Buffer, Person, PlanState, Project, Quarter } from './types';
 
 type ID = string;
@@ -928,7 +929,8 @@ function InitiativeRow({
         </td>
         <td className="px-2 py-2 align-middle">
           <ReleaseDatePicker
-            project={project}
+            value={project.releaseDate}
+            name={project.name || 'Untitled project'}
             onChange={releaseDate => onUpdate({ releaseDate })}
           />
         </td>
@@ -1193,6 +1195,20 @@ export function exportPlanMarkdown(
     });
   }
   lines.push('');
+
+  const milestoneRows = activeInitiatives.flatMap(p =>
+    (p.milestones ?? []).map(m => ({ project: p, milestone: m })),
+  );
+  if (milestoneRows.length > 0) {
+    lines.push('## Milestones');
+    lines.push('| Project | Milestone | Ship date |');
+    lines.push('|---------|-----------|-----------|');
+    for (const { project, milestone } of milestoneRows) {
+      const shipDate = milestone.releaseDate ? escapeMd(milestone.releaseDate) : '—';
+      lines.push(`| ${escapeMd(project.name)} | ${escapeMd(milestoneLabel(milestone))} | ${shipDate} |`);
+    }
+    lines.push('');
+  }
 
   if (descopedInitiatives.length > 0) {
     lines.push('## Descoped');

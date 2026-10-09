@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PlanState } from './types';
 import { recordVisit } from './visited';
+import { pruneMilestoneRefs, sanitizeMilestones } from './milestones';
 
 export type ConnState = 'connecting' | 'open' | 'closed' | 'missing';
 
 export type PasswordError = 'wrong_password' | 'too_many_attempts' | 'auth_required' | 'password_too_short' | 'password_too_long' | 'unknown';
 
 /** Migrate plan state from older schemas so old plans keep working.
- *  Convert legacy estimates to EM and leave release dates unset on older plans. */
+ *  Convert legacy estimates to EM, leave release dates unset on older plans, and
+ *  drop milestone references that no longer match a milestone of their project. */
 function migrateState(raw: any): PlanState {
   if (!raw || typeof raw !== 'object') return raw;
   const projects = Array.isArray(raw.projects)
@@ -19,10 +21,14 @@ function migrateState(raw: any): PlanState {
             ? { estimateEM: p.estimatedWeeks / 4 }
             : {}),
           releaseDate: p.releaseDate || undefined,
+          milestones: sanitizeMilestones(p.milestones),
         };
       })
     : raw.projects;
-  return { ...raw, projects } as PlanState;
+  const assignments = Array.isArray(raw.assignments) && Array.isArray(projects)
+    ? pruneMilestoneRefs(raw.assignments, projects.filter(Boolean))
+    : raw.assignments;
+  return { ...raw, projects, assignments } as PlanState;
 }
 
 export type UsePlan = {
@@ -57,6 +63,12 @@ const writeToken = (slug: string, token: string | null) => {
   } catch {}
 };
 
+/** Authorization header carrying the plan's saved unlock token, if there is one. */
+export function planAuthHeaders(slug: string): Record<string, string> {
+  const token = readToken(slug);
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 export function usePlan(slug: string | null): UsePlan {
   const [state, setLocalState] = useState<PlanState | null>(null);
   const [conn, setConn] = useState<ConnState>('connecting');
@@ -66,6 +78,8 @@ export function usePlan(slug: string | null): UsePlan {
   const [hasPassword, setHasPassword] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const pendingRef = useRef<PlanState | null>(null);
+  // Set once the server's hello arrives. Edits sent earlier would be overwritten by that hello.
+  const helloRef = useRef(false);
   const sendTimerRef = useRef<number | null>(null);
   const tokenRef = useRef<string | null>(slug ? readToken(slug) : null);
   // Bumped to trigger the load/connect effect to re-run (e.g. after unlock).
@@ -78,7 +92,7 @@ export function usePlan(slug: string | null): UsePlan {
     }
     const ws = wsRef.current;
     const next = pendingRef.current;
-    if (!ws || ws.readyState !== ws.OPEN || !next) return;
+    if (!ws || ws.readyState !== ws.OPEN || !helloRef.current || !next) return;
     ws.send(JSON.stringify({ type: 'update', state: next }));
     pendingRef.current = null;
   }, []);
@@ -88,6 +102,7 @@ export function usePlan(slug: string | null): UsePlan {
       setLocalState(prev => {
         if (!prev) return prev;
         const next = updater(prev);
+        if (next === prev) return prev;
         pendingRef.current = next;
         if (sendTimerRef.current != null) window.clearTimeout(sendTimerRef.current);
         sendTimerRef.current = window.setTimeout(flush, SEND_DEBOUNCE_MS);
@@ -110,6 +125,7 @@ export function usePlan(slug: string | null): UsePlan {
       const url = `${proto}//${window.location.host}/ws/${encodeURIComponent(slug)}${qs}`;
       const ws = new WebSocket(url);
       wsRef.current = ws;
+      helloRef.current = false;
       setConn('connecting');
 
       ws.onopen = () => {
@@ -123,11 +139,15 @@ export function usePlan(slug: string | null): UsePlan {
         if (stopped) return;
         let msg: any;
         try { msg = JSON.parse(ev.data); } catch { return; }
+        // A pending local edit is about to be sent and will win on the server, so keep
+        // showing it instead of the incoming state.
         if (msg.type === 'hello') {
-          setLocalState(migrateState(msg.state));
+          setLocalState(pendingRef.current ?? migrateState(msg.state));
           setPeers(msg.peers ?? 1);
+          helloRef.current = true;
+          flush();
         } else if (msg.type === 'state') {
-          setLocalState(migrateState(msg.state));
+          setLocalState(pendingRef.current ?? migrateState(msg.state));
         } else if (msg.type === 'peers') {
           setPeers(msg.peers ?? 1);
         }

@@ -6,8 +6,12 @@ import { fileURLToPath } from 'url';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
+import { createScopeService, issueKey, parseIssueUrl } from './scope.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// Local secrets such as GITHUB_TOKEN. Real environment variables take precedence.
+const ENV_FILE = path.resolve(__dirname, '..', '.env');
+if (fs.existsSync(ENV_FILE) && typeof process.loadEnvFile === 'function') process.loadEnvFile(ENV_FILE);
 const DATA_DIR = process.env.DATA_DIR || path.resolve(__dirname, '..', 'data');
 fs.mkdirSync(DATA_DIR, { recursive: true });
 const DB_PATH = path.join(DATA_DIR, 'gantt.db');
@@ -32,6 +36,13 @@ if (!planCols.has('password_hash')) {
 if (!planCols.has('password_version')) {
   db.exec('ALTER TABLE plans ADD COLUMN password_version INTEGER NOT NULL DEFAULT 0');
 }
+
+// --- GitHub scope tracking (enabled when GITHUB_TOKEN is set). ---
+const scope = createScopeService({
+  db,
+  token: process.env.GITHUB_TOKEN,
+  repos: (process.env.GITHUB_SCOPE_REPOS || '').split(','),
+});
 
 // --- Server secret for signing unlock tokens. ---
 // Persisted in DATA_DIR so restarts don't invalidate all tokens.
@@ -201,6 +212,8 @@ app.use(express.json({ limit: '4mb' }));
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
+app.get('/api/config', (_req, res) => res.json({ scope: { enabled: scope.enabled, repos: scope.repos } }));
+
 app.get('/api/plans', (_req, res) => res.json(listPlans()));
 
 app.post('/api/plans', (req, res) => {
@@ -305,6 +318,62 @@ app.delete('/api/plans/:slug', (req, res) => {
   }
   deletePlan.run(req.params.slug);
   res.json({ ok: true });
+});
+
+/* ------------ GitHub scope tracking ------------ */
+
+/** The plan row if the request may read it; otherwise responds with an error. */
+const readablePlan = (req, res) => {
+  const row = getPlan(req.params.slug);
+  if (!row) {
+    res.status(404).json({ error: 'not found' });
+    return null;
+  }
+  if (row.password_hash && !verifyToken(row.slug, row.password_version, tokenFromReq(req))) {
+    res.status(401).json({ error: 'auth_required' });
+    return null;
+  }
+  return row;
+};
+
+/** The issue in `?url=` if this plan links to it; otherwise responds with an error.
+ *  Only linked issues are served, so the server's token can't read arbitrary issues. */
+const scopeIssue = (req, res) => {
+  if (!scope.enabled) {
+    res.status(503).json({ error: 'not_configured' });
+    return null;
+  }
+  const row = readablePlan(req, res);
+  if (!row) return null;
+  const ref = parseIssueUrl(req.query.url);
+  if (!ref) {
+    res.status(400).json({ error: 'bad_url' });
+    return null;
+  }
+  let projects = [];
+  try {
+    projects = JSON.parse(row.state).projects ?? [];
+  } catch {}
+  const key = issueKey(ref);
+  const linked = projects.some((p) => {
+    const linkedRef = parseIssueUrl(p?.url);
+    return linkedRef && issueKey(linkedRef) === key;
+  });
+  if (!linked || !scope.allows(ref)) {
+    res.status(403).json({ error: 'not_linked' });
+    return null;
+  }
+  return ref;
+};
+
+app.get('/api/plans/:slug/scope', async (req, res) => {
+  const ref = scopeIssue(req, res);
+  if (ref) res.json(await scope.get(ref));
+});
+
+app.post('/api/plans/:slug/scope/refresh', async (req, res) => {
+  const ref = scopeIssue(req, res);
+  if (ref) res.json(await scope.refresh(ref));
 });
 
 /* ------------ Static frontend (production) ------------ */

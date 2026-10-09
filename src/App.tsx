@@ -8,6 +8,8 @@ export default function App() {
   const segments = path.replace(/^\/+/, '').split('/').filter(Boolean);
   const slug = segments[0];
   const isLegacyCapacity = segments[1] === 'capacity';
+  // /<slug>/p/<projectId> opens that project's editor.
+  const projectId = segments[1] === 'p' ? segments[2] : undefined;
 
   // Fold legacy /<slug>/capacity URL into the unified single-page view.
   useEffect(() => {
@@ -19,5 +21,5 @@ export default function App() {
 
   if (path === '/' || path === '') return <Home />;
   if (!slug) return <Home />;
-  return <Plan key={slug} slug={slug} />;
+  return <Plan key={slug} slug={slug} projectId={projectId} />;
 }
