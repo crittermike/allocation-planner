@@ -125,7 +125,7 @@ Add milestones in the project editor. For a project linked to a GitHub epic, the
 epic's Batch sub-issues are added as milestones automatically when the editor loads
 the epic's scope, and kept in sync: new ones are added, and names, URLs, and order
 follow GitHub. Ship dates and assignments stay. A synced milestone that is no longer
-on the epic is kept and marked "not on GitHub" so nothing is lost; remove it by hand.
+on the epic is kept and shown crossed out so nothing is lost; remove it by hand.
 Manually added milestones are never changed.
 In the chart's picker, a project's milestones are listed under it; choose the
 project itself for work that isn't tied to one milestone. Hover an assignment and

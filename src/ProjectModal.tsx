@@ -28,15 +28,17 @@ const fmtWk = (n: number): string => {
   return r % 1 === 0 ? `${r}` : parseFloat(r.toFixed(2)).toString();
 };
 
-export function ReleaseDatePicker({ value, name, onChange, title = "The date you've communicated this project will ship" }: {
+export function ReleaseDatePicker({ value, name, onChange, title = "The date you've communicated this project will ship", compact }: {
   value: string | undefined;
+  /** Fill a narrow fixed-width parent instead of keeping the default minimum width. */
+  compact?: boolean;
   /** What ships on this date, for accessible labels. */
   name: string;
   onChange: (date: string | undefined) => void;
   title?: string;
 }) {
   return (
-    <div className="flex h-8 w-full min-w-[174px] max-w-[220px] items-center rounded-md border border-ink-200 bg-white transition-colors hover:border-ink-300 focus-within:border-brand-400 focus-within:ring-2 focus-within:ring-brand-200">
+    <div className={(compact ? 'w-full ' : 'w-full min-w-[174px] max-w-[220px] ') + 'flex h-8 items-center rounded-md border border-ink-200 bg-white transition-colors hover:border-ink-300 focus-within:border-brand-400 focus-within:ring-2 focus-within:ring-brand-200'}>
       <input
         type="date"
         min="0001-01-01"
@@ -238,7 +240,6 @@ function MilestonesSection(props: {
     <div className="flex flex-col gap-1.5">
       <div className="flex items-baseline gap-2">
         <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-500">Milestones</span>
-        <span className="text-[10px] text-ink-400">— assign people to them on the chart. Batch sub-issues of a linked GitHub epic are added and kept in sync.</span>
         <span className="flex-1" />
       </div>
       {milestones.length > 0 && (
@@ -247,7 +248,7 @@ function MilestonesSection(props: {
             const label = milestoneLabel(m);
             const weeks = props.assignedByMilestone[m.id] ?? 0;
             return (
-              <li key={m.id} className="flex items-center gap-1.5">
+              <li key={m.id} className="flex items-center gap-2">
                 <span
                   className="inline-block h-2 w-2 shrink-0 rotate-45 rounded-[1px] border border-black/10"
                   style={{ background: project.color }}
@@ -259,14 +260,15 @@ function MilestonesSection(props: {
                   onChange={e => props.onUpdate(m.id, { name: e.target.value })}
                   readOnly={m.github && !m.goneFromGitHub}
                   title={m.goneFromGitHub
-                    ? 'No longer a Batch sub-issue of the GitHub epic. Kept so its ship date and assignments are not lost; remove it when you are done with it.'
-                    : m.github ? 'Synced from GitHub' : undefined}
+                    ? 'Not on GitHub anymore: no longer a Batch sub-issue of the epic. Kept so its ship date and assignments are not lost; remove it when you are done with it.'
+                    : m.github ? `${m.name} (synced from GitHub)` : m.name || undefined}
                   placeholder="Milestone name"
                   aria-label="Milestone name"
-                  className={(m.goneFromGitHub ? 'line-through decoration-ink-400 ' : '') + (m.github && !m.goneFromGitHub ? 'bg-ink-50 ' : '') + "h-8 min-w-0 flex-1 rounded-md border border-ink-200 bg-white px-2.5 text-[12.5px] text-ink-800 outline-none transition hover:border-ink-300 focus:border-brand-400 focus:ring-2 focus:ring-brand-200"}
+                  className={(m.goneFromGitHub ? 'line-through decoration-amber-500 !border-amber-300 !bg-amber-50 ' : '') + (m.github && !m.goneFromGitHub ? 'bg-ink-50 ' : '') + "h-8 min-w-0 flex-1 rounded-md border border-ink-200 bg-white px-2.5 text-[12.5px] text-ink-800 outline-none transition hover:border-ink-300 focus:border-brand-400 focus:ring-2 focus:ring-brand-200"}
                 />
-                <div className="w-[150px] shrink-0">
+                <div className="w-[148px] shrink-0">
                   <ReleaseDatePicker
+                    compact
                     value={m.releaseDate}
                     name={`${project.name || 'Untitled project'} · ${label}`}
                     title="The date you've communicated this milestone will ship"
@@ -274,16 +276,12 @@ function MilestonesSection(props: {
                   />
                 </div>
                 <span
-                  className={'w-10 shrink-0 text-right text-[10.5px] tabular-nums ' + (weeks ? 'text-ink-500' : 'text-ink-300')}
+                  className={'w-9 shrink-0 whitespace-nowrap text-right text-[11px] tabular-nums ' + (weeks ? 'text-ink-500' : 'text-ink-300')}
                   title={`${weeks} assignment-week${weeks === 1 ? '' : 's'} planned on this milestone`}
                 >
                   {weeks} wk
                 </span>
-                {m.goneFromGitHub && (
-                  <span className="shrink-0 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700" title="No longer a Batch sub-issue of the GitHub epic">
-                    not on GitHub
-                  </span>
-                )}
+                <div className="flex shrink-0 items-center gap-0.5">
                 {m.url ? (
                   <a
                     href={m.url}
@@ -309,6 +307,7 @@ function MilestonesSection(props: {
                 >
                   ×
                 </button>
+                </div>
               </li>
             );
           })}
