@@ -78,6 +78,8 @@ export function usePlan(slug: string | null): UsePlan {
   const [hasPassword, setHasPassword] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const pendingRef = useRef<PlanState | null>(null);
+  // Set once the server's hello arrives. Edits sent earlier would be overwritten by that hello.
+  const helloRef = useRef(false);
   const sendTimerRef = useRef<number | null>(null);
   const tokenRef = useRef<string | null>(slug ? readToken(slug) : null);
   // Bumped to trigger the load/connect effect to re-run (e.g. after unlock).
@@ -90,7 +92,7 @@ export function usePlan(slug: string | null): UsePlan {
     }
     const ws = wsRef.current;
     const next = pendingRef.current;
-    if (!ws || ws.readyState !== ws.OPEN || !next) return;
+    if (!ws || ws.readyState !== ws.OPEN || !helloRef.current || !next) return;
     ws.send(JSON.stringify({ type: 'update', state: next }));
     pendingRef.current = null;
   }, []);
@@ -123,6 +125,7 @@ export function usePlan(slug: string | null): UsePlan {
       const url = `${proto}//${window.location.host}/ws/${encodeURIComponent(slug)}${qs}`;
       const ws = new WebSocket(url);
       wsRef.current = ws;
+      helloRef.current = false;
       setConn('connecting');
 
       ws.onopen = () => {
@@ -136,11 +139,15 @@ export function usePlan(slug: string | null): UsePlan {
         if (stopped) return;
         let msg: any;
         try { msg = JSON.parse(ev.data); } catch { return; }
+        // A pending local edit is about to be sent and will win on the server, so keep
+        // showing it instead of the incoming state.
         if (msg.type === 'hello') {
-          setLocalState(migrateState(msg.state));
+          setLocalState(pendingRef.current ?? migrateState(msg.state));
           setPeers(msg.peers ?? 1);
+          helloRef.current = true;
+          flush();
         } else if (msg.type === 'state') {
-          setLocalState(migrateState(msg.state));
+          setLocalState(pendingRef.current ?? migrateState(msg.state));
         } else if (msg.type === 'peers') {
           setPeers(msg.peers ?? 1);
         }

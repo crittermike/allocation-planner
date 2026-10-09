@@ -323,9 +323,6 @@ function MilestonesSection(props: {
       >
         + Add milestone
       </button>
-      {milestones.some(m => m.releaseDate) && (
-        <p className="text-[11.5px] text-ink-500">Milestone ship dates show on the chart's Releases row.</p>
-      )}
     </div>
   );
 }
@@ -521,7 +518,6 @@ export function ProjectEditModal(props: {
               name={project.name || 'Untitled project'}
               onChange={releaseDate => props.onUpdate({ releaseDate })}
             />
-            <p className="text-[11.5px] text-ink-500">The date you've communicated this project will ship.</p>
           </div>
 
           <MilestonesSection
