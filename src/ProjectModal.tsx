@@ -218,8 +218,6 @@ function EmPicker({
 
 function MilestonesSection(props: {
   project: Project;
-  /** GitHub milestones from scope tracking, offered for import. */
-  found: FoundMilestone[];
   assignedByMilestone: Record<string, number>;
   onAdd: (items: Omit<Milestone, 'id'>[]) => void;
   onUpdate: (milestoneId: string, patch: Partial<Omit<Milestone, 'id'>>) => void;
@@ -227,8 +225,6 @@ function MilestonesSection(props: {
 }) {
   const { project } = props;
   const milestones = project.milestones ?? [];
-  const known = new Set(milestones.map(m => m.url).filter(Boolean));
-  const importable = props.found.filter(f => !known.has(f.url));
   const listRef = useRef<HTMLUListElement>(null);
   const focusNew = useRef(false);
   useEffect(() => {
@@ -242,18 +238,8 @@ function MilestonesSection(props: {
     <div className="flex flex-col gap-1.5">
       <div className="flex items-baseline gap-2">
         <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-500">Milestones</span>
-        <span className="text-[10px] text-ink-400">— assign people to them on the chart</span>
+        <span className="text-[10px] text-ink-400">— assign people to them on the chart. Batch sub-issues of a linked GitHub epic are added and kept in sync.</span>
         <span className="flex-1" />
-        {importable.length > 0 && (
-          <button
-            type="button"
-            onClick={() => props.onAdd(importable.map(f => ({ name: f.name, url: f.url })))}
-            title={`Add from GitHub:\n${importable.map(f => f.name).join('\n')}`}
-            className="inline-flex h-6 shrink-0 items-center gap-1 rounded-full border border-brand-200 bg-brand-50 px-2.5 text-[11px] font-semibold text-brand-700 transition hover:bg-brand-100"
-          >
-            + {importable.length} from GitHub
-          </button>
-        )}
       </div>
       {milestones.length > 0 && (
         <ul ref={listRef} className="flex flex-col gap-1.5">
@@ -271,9 +257,13 @@ function MilestonesSection(props: {
                   data-milestone-name
                   value={m.name}
                   onChange={e => props.onUpdate(m.id, { name: e.target.value })}
+                  readOnly={m.github && !m.goneFromGitHub}
+                  title={m.goneFromGitHub
+                    ? 'No longer a Batch sub-issue of the GitHub epic. Kept so its ship date and assignments are not lost; remove it when you are done with it.'
+                    : m.github ? 'Synced from GitHub' : undefined}
                   placeholder="Milestone name"
                   aria-label="Milestone name"
-                  className="h-8 min-w-0 flex-1 rounded-md border border-ink-200 bg-white px-2.5 text-[12.5px] text-ink-800 outline-none transition hover:border-ink-300 focus:border-brand-400 focus:ring-2 focus:ring-brand-200"
+                  className={(m.goneFromGitHub ? 'line-through decoration-ink-400 ' : '') + (m.github && !m.goneFromGitHub ? 'bg-ink-50 ' : '') + "h-8 min-w-0 flex-1 rounded-md border border-ink-200 bg-white px-2.5 text-[12.5px] text-ink-800 outline-none transition hover:border-ink-300 focus:border-brand-400 focus:ring-2 focus:ring-brand-200"}
                 />
                 <div className="w-[150px] shrink-0">
                   <ReleaseDatePicker
@@ -289,6 +279,11 @@ function MilestonesSection(props: {
                 >
                   {weeks} wk
                 </span>
+                {m.goneFromGitHub && (
+                  <span className="shrink-0 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700" title="No longer a Batch sub-issue of the GitHub epic">
+                    not on GitHub
+                  </span>
+                )}
                 {m.url ? (
                   <a
                     href={m.url}
@@ -354,6 +349,8 @@ export function ProjectEditModal(props: {
   /** All projects in the plan, so milestones can show linked projects' release dates. */
   projects?: Project[];
   onAddMilestones: (items: Omit<Milestone, 'id'>[]) => void;
+  /** Sync the project's milestones with those found on its GitHub epic. */
+  onSyncMilestones: (found: FoundMilestone[]) => void;
   onUpdateMilestone: (milestoneId: string, patch: Partial<Omit<Milestone, 'id'>>) => void;
   onRemoveMilestone: (milestoneId: string) => void;
   /** Assignment-weeks per milestone of this project. */
@@ -376,10 +373,13 @@ export function ProjectEditModal(props: {
     replaceSearchParam('milestone', next == null ? null : String(next));
   }, []);
   const openedUrl = useRef(props.project.url);
-  const [foundMilestones, setFoundMilestones] = useState<{ url: string; items: FoundMilestone[] } | null>(null);
   const scopeUrl = props.slug ? scopeSourceFor(props.project.url, scopeConfig)?.issue.url : undefined;
+  const latestScopeUrl = useRef(scopeUrl);
+  latestScopeUrl.current = scopeUrl;
+  const syncMilestones = useRef(props.onSyncMilestones);
+  syncMilestones.current = props.onSyncMilestones;
   const onMilestonesFound = useCallback(
-    (items: FoundMilestone[]) => { if (scopeUrl) setFoundMilestones({ url: scopeUrl, items }); },
+    (items: FoundMilestone[]) => { if (scopeUrl && latestScopeUrl.current === scopeUrl) syncMilestones.current(items); },
     [scopeUrl],
   );
 
@@ -527,7 +527,6 @@ export function ProjectEditModal(props: {
 
           <MilestonesSection
             project={project}
-            found={trackedUrl && foundMilestones?.url === trackedUrl ? foundMilestones.items : []}
             assignedByMilestone={props.assignedByMilestone ?? {}}
             onAdd={props.onAddMilestones}
             onUpdate={props.onUpdateMilestone}

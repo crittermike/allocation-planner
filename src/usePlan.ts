@@ -100,6 +100,7 @@ export function usePlan(slug: string | null): UsePlan {
       setLocalState(prev => {
         if (!prev) return prev;
         const next = updater(prev);
+        if (next === prev) return prev;
         pendingRef.current = next;
         if (sendTimerRef.current != null) window.clearTimeout(sendTimerRef.current);
         sendTimerRef.current = window.setTimeout(flush, SEND_DEBOUNCE_MS);

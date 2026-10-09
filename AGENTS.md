@@ -17,7 +17,7 @@ Guidance for agents working on this app.
 - Production server: `npm start`
 - Deploy: `~/.fly/bin/flyctl deploy` (Fly.io app is `allocation-planner`; `fly deploy` works if `flyctl` is on PATH)
 
-Run `npm run build` before claiming code changes are complete — it both typechecks (`tsc -b`) and bundles. There are no separate test or lint scripts at the time of writing. GitHub Actions (`.github/workflows/ci.yml`) runs the same build on every push to `main` and on every PR.
+Run `npm run build` before claiming code changes are complete — it both typechecks (`tsc -b`) and bundles. Run `npm test` for unit tests (`node --test test/*.test.ts`). There is no lint script. GitHub Actions (`.github/workflows/ci.yml`) runs the same build on every push to `main` and on every PR.
 
 ## Important files
 

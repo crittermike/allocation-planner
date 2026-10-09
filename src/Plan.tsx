@@ -15,7 +15,7 @@ import { ColorPopover, ProjectEditModal } from './ProjectModal';
 import {
   milestoneLabel,
   milestoneOf,
-  newMilestonesFrom,
+  syncGitHubMilestones,
   releasesByWeek as groupReleasesByWeek,
   removeMilestone as removeMilestoneFromState,
   sameSlot,
@@ -672,13 +672,21 @@ function PlanView({
     pushUndo();
     setState(s => ({
       ...s,
-      projects: s.projects.map(p => {
-        if (p.id !== projectId) return p;
-        const fresh = newMilestonesFrom(p.milestones, items, uid);
-        return fresh.length ? { ...p, milestones: [...(p.milestones ?? []), ...fresh] } : p;
-      }),
+      projects: s.projects.map(p => (p.id === projectId
+        ? { ...p, milestones: [...(p.milestones ?? []), ...items.map(item => ({ ...item, id: uid() }))] }
+        : p)),
     }));
   };
+  // Runs whenever scope tracking loads the project's epic. No undo entry: it mirrors GitHub.
+  const syncMilestones = useCallback((projectId: ID, found: { name: string; url: string }[]) => {
+    setState(s => {
+      const project = s.projects.find(p => p.id === projectId);
+      if (!project) return s;
+      const milestones = syncGitHubMilestones(project.milestones, found, uid);
+      if (milestones === project.milestones) return s;
+      return { ...s, projects: s.projects.map(p => (p.id === projectId ? { ...p, milestones } : p)) };
+    });
+  }, [setState]);
   const removeMilestone = (projectId: ID, milestoneId: ID) => {
     pushUndo();
     setState(s => removeMilestoneFromState(s, projectId, milestoneId));
@@ -1396,6 +1404,7 @@ function PlanView({
         weeksPerEM={state.quarter?.weeksPerEM ?? 4}
         onUpdate={patch => updateProject(editingProject.id, patch)}
         onAddMilestones={items => addMilestones(editingProject.id, items)}
+        onSyncMilestones={found => syncMilestones(editingProject.id, found)}
         onUpdateMilestone={(milestoneId, patch) => updateMilestone(editingProject.id, milestoneId, patch)}
         onRemoveMilestone={milestoneId => removeMilestone(editingProject.id, milestoneId)}
         assignedByMilestone={assignedByMilestone}

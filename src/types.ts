@@ -10,6 +10,11 @@ export type Milestone = {
   releaseDate?: string;
   /** The milestone's GitHub sub-issue, when it came from scope tracking. */
   url?: string;
+  /** Kept in sync with the project's GitHub epic: name, URL, and order come from GitHub. */
+  github?: true;
+  /** Synced from GitHub, but no longer a Batch sub-issue of the epic. Kept so its
+   *  ship date and assignments aren't lost; the user can remove it. */
+  goneFromGitHub?: true;
 };
 export type Project = {
   id: ID;

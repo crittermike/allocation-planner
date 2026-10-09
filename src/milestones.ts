@@ -38,6 +38,8 @@ export function sanitizeMilestones(raw: unknown): Milestone[] | undefined {
       name: typeof m.name === 'string' ? m.name : '',
       releaseDate: typeof m.releaseDate === 'string' && ISO_DAY.test(m.releaseDate) ? m.releaseDate : undefined,
       url: typeof m.url === 'string' && m.url ? m.url : undefined,
+      ...(m.github === true ? { github: true as const } : {}),
+      ...(m.github === true && m.goneFromGitHub === true ? { goneFromGitHub: true as const } : {}),
     });
   }
   return out.length ? out : undefined;
@@ -93,21 +95,45 @@ export function setAssignmentMilestone(state: PlanState, assignmentId: ID, miles
   return { ...state, assignments: state.assignments.map(x => (x.id === assignmentId ? next : x)) };
 }
 
-/** Milestones to add to a project. Ones linked to an issue the project already has
- *  a milestone for (matched by URL) are skipped, so importing twice adds nothing. */
-export function newMilestonesFrom(
+/** A project's milestones after syncing with the milestones found on its GitHub epic.
+ *  - Found milestones are added, or update the linked milestone (matched by URL), keeping
+ *    its id, ship date, and so its assignments. They follow GitHub's order.
+ *  - Synced milestones no longer found are kept and flagged `goneFromGitHub`, so no
+ *    ship date or assignment is dropped silently.
+ *  - Manual milestones (not synced, URL not found) are left as they are, in place.
+ *  Returns `existing` itself when nothing changed. */
+export function syncGitHubMilestones(
   existing: Milestone[] | undefined,
-  items: Omit<Milestone, 'id'>[],
+  found: { name: string; url: string }[],
   makeId: () => ID,
-): Milestone[] {
-  const have = new Set((existing ?? []).map(m => m.url).filter(Boolean));
-  return items.flatMap(item => {
-    if (item.url) {
-      if (have.has(item.url)) return [];
-      have.add(item.url);
-    }
-    return [{ ...item, id: makeId() }];
+): Milestone[] | undefined {
+  const current = existing ?? [];
+  const byUrl = new Map<string, Milestone>();
+  for (const m of current) if (m.url && !byUrl.has(m.url)) byUrl.set(m.url, m);
+  const seen = new Set<string>();
+  const synced: Milestone[] = [];
+  for (const f of found) {
+    if (!f.url || seen.has(f.url)) continue;
+    seen.add(f.url);
+    const prev = byUrl.get(f.url);
+    const { goneFromGitHub: _gone, ...base } = prev ?? { id: makeId(), name: '' };
+    synced.push({ ...base, name: f.name, url: f.url, github: true });
+  }
+  const linked = (m: Milestone) => !!m.url && seen.has(m.url) && byUrl.get(m.url) === m;
+  const queue = [...synced];
+  const out: Milestone[] = [];
+  for (const m of current) {
+    if (linked(m)) out.push(queue.shift()!);
+    else if (m.github && !m.goneFromGitHub) out.push({ ...m, goneFromGitHub: true });
+    else out.push(m);
+  }
+  out.push(...queue);
+  const same = out.length === current.length && out.every((m, i) => {
+    const c = current[i];
+    return m.id === c.id && m.name === c.name && m.url === c.url && m.github === c.github && m.goneFromGitHub === c.goneFromGitHub;
   });
+  if (same) return existing;
+  return out.length ? out : undefined;
 }
 
 /* ---------- releases ---------- */
