@@ -9,6 +9,7 @@ import {
   canForecast,
   hasSubIssues,
   isCreep,
+  pointsOf,
   issueKey,
   maxCreepForTarget,
   milestoneNames,
@@ -757,7 +758,7 @@ function Verdict({ summary: s, rootNumber }: { summary: ScopeSummary; rootNumber
 
 function Stats({ summary: s }: { summary: ScopeSummary }) {
   const grew = s.baseline.scope !== s.current.scope;
-  const creepCount = s.events.filter(isCreep).length;
+  const creepCount = s.events.filter(isCreep).reduce((n, e) => n + pointsOf(e.issue), 0);
   const pace = s.pace;
   const creep = established(s) && pace
     ? {

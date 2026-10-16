@@ -126,7 +126,7 @@ export function pointsFrom(projectItems) {
   for (const item of projectItems?.nodes ?? []) {
     const v = item?.fieldValueByName;
     const raw = v?.name ?? v?.number ?? v?.text;
-    const n = typeof raw === 'number' ? raw : Number.parseFloat(String(raw ?? '').trim());
+    const n = typeof raw === 'number' ? raw : Number(String(raw ?? '').trim() || NaN);
     if (Number.isFinite(n) && n > 0) return n;
   }
   return null;
@@ -150,8 +150,9 @@ async function fetchPoints(token, ids) {
       for (const node of res.data.nodes ?? []) if (node?.id) points.set(node.id, pointsFrom(node.projectItems));
     }
   } catch (e) {
-    if (e instanceof GitHubError && e.kind === 'rate') throw e;
-    return null;
+    // Only a denial means no Projects access; anything else keeps the last good cache.
+    if (e instanceof GitHubError && (e.kind === 'auth' || e.kind === 'graphql')) return null;
+    throw e;
   }
   return points;
 }

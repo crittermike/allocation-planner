@@ -14,6 +14,7 @@ test('pointsOf defaults to 3 when unset or invalid', () => {
 test('pointsFrom takes the first numeric Points value', () => {
   assert.equal(pointsFrom({ nodes: [{ fieldValueByName: null }, { fieldValueByName: { name: '5' } }] }), 5);
   assert.equal(pointsFrom({ nodes: [{ fieldValueByName: { name: 'XL' } }] }), null);
+  assert.equal(pointsFrom({ nodes: [{ fieldValueByName: { name: '5XL' } }, { fieldValueByName: { name: '2' } }] }), 2);
   assert.equal(pointsFrom({ nodes: [{ fieldValueByName: { number: 2 } }] }), 2);
   assert.equal(pointsFrom(undefined), null);
 });
