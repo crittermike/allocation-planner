@@ -37,6 +37,18 @@ export type ScopeIssue = {
   closeReason?: CloseReason;
   /** Previous parent, when the issue was moved here from another issue. */
   movedFrom?: { number: number; title: string };
+  /** Size from the project board's Points field; DEFAULT_POINTS when unset. */
+  points?: number | null;
+};
+
+/** Points for an issue whose Points field is empty or not a number. */
+export const DEFAULT_POINTS = 3;
+export const pointsOf = (issue: Pick<ScopeIssue, 'points'>) =>
+  typeof issue.points === 'number' && issue.points > 0 ? issue.points : DEFAULT_POINTS;
+const sumPoints = (issues: Iterable<ScopeIssue>) => {
+  let n = 0;
+  for (const i of issues) n += pointsOf(i);
+  return n;
 };
 
 export type ScopeSnapshot = {
@@ -86,9 +98,9 @@ export const FORECAST_WINDOW_DAYS = 28;
 export const RAMP_WEEKS = 4;
 /** With no finished milestone to compare with, no forecast until work has run this long… */
 export const MIN_HISTORY_DAYS = 14;
-/** …and this many issues were finished. */
-export const MIN_COMPLETIONS = 5;
-/** New issues per finished issue at which creep counts as high. */
+/** …and this many points were finished. */
+export const MIN_COMPLETIONS = 15;
+/** New points per finished point at which creep counts as high. */
 export const HIGH_CREEP_RATIO = 0.5;
 /** Projections further out are reported without a date. */
 const MAX_PROJECTION_WEEKS = 52;
@@ -420,12 +432,12 @@ function diff(
   return events;
 }
 
-/** Finished issues, minus reopened ones and finished ones later marked not planned or duplicate. */
+/** Finished points, minus reopened issues and finished ones later marked not planned or duplicate. */
 function netCompleted(events: ScopeEvent[]): number {
   let n = 0;
   for (const e of events) {
-    if (e.kind === 'completed') n++;
-    else if (e.kind === 'reopened' || (e.kind === 'removed' && e.reason === 'dropped' && !e.wasOpen)) n--;
+    if (e.kind === 'completed') n += pointsOf(e.issue);
+    else if (e.kind === 'reopened' || (e.kind === 'removed' && e.reason === 'dropped' && !e.wasOpen)) n -= pointsOf(e.issue);
   }
   return n;
 }
@@ -433,7 +445,7 @@ function netCompleted(events: ScopeEvent[]): number {
 function observe(events: ScopeEvent[], startedAt: number, asOf: number): OwnPace {
   const windowStart = Math.max(startedAt, asOf - FORECAST_WINDOW_DAYS * DAY);
   const recent = events.filter(e => Date.parse(e.at) >= windowStart);
-  const count = (pred: (e: ScopeEvent) => boolean) => recent.filter(pred).length;
+  const count = (pred: (e: ScopeEvent) => boolean) => sumPoints(recent.filter(pred).map(e => e.issue));
   const windowWeeks = Math.max(1 / 7, (asOf - windowStart) / WEEK);
   const completed = netCompleted(recent);
   const creep = count(isCreep);
@@ -476,8 +488,8 @@ function summarize(snaps: Indexed[], member: Member, asOf: number, refs: Referen
   const scopes = snaps.map(s => scopeOf(s, member));
   const all: ScopePoint[] = snaps.map((s, i) => ({
     at: s.observedAt,
-    scope: scopes[i].size,
-    completed: [...scopes[i].values()].filter(issue => issue.state === 'closed').length,
+    scope: sumPoints(scopes[i].values()),
+    completed: sumPoints([...scopes[i].values()].filter(issue => issue.state === 'closed')),
   }));
   const last = all.length - 1;
   const current = all[last];
@@ -555,8 +567,8 @@ function summarize(snaps: Indexed[], member: Member, asOf: number, refs: Referen
     baseline: all[b],
     current,
     remaining,
-    addedSinceStart: [...currentScope.keys()].filter(id => !baselineScope.has(id)).length,
-    removedSinceStart: [...baselineScope.keys()].filter(id => !currentScope.has(id)).length,
+    addedSinceStart: sumPoints([...currentScope.values()].filter(i => !baselineScope.has(i.id))),
+    removedSinceStart: sumPoints([...baselineScope.values()].filter(i => !currentScope.has(i.id))),
     events: ascending.reverse(),
     remainingIssues,
     status,
@@ -573,7 +585,7 @@ function referencePace(milestone: ScopeIssue, s: ScopeSummary): ReferencePace | 
     label: shortLabel(milestone),
     number: milestone.number,
     completionRate: Math.max(0, finished) / weeks,
-    creepRate: s.events.filter(isCreep).length / weeks,
+    creepRate: sumPoints(s.events.filter(isCreep).map(e => e.issue)) / weeks,
     weeks,
   };
 }
@@ -711,6 +723,8 @@ export type HistoryIssue = {
   children: string[];
   /** Sub-issues added and removed, closes and reopens, and moves away from other parents. */
   events: HistoryEvent[];
+  /** Current Points value; null when unset, undefined in data cached before points were read. */
+  points?: number | null;
 };
 
 /** GitHub's record of an issue tree, as fetched by the server. */
@@ -723,6 +737,8 @@ export type ScopeHistory = {
   issues: HistoryIssue[];
   /** Current sub-issues the server's token can't read. */
   unreadable: number;
+  /** False when the token can't read the project board, so every issue uses DEFAULT_POINTS. */
+  pointsReadable?: boolean;
 };
 
 /** Changes this close together are one observation, so moving an issue between
@@ -879,6 +895,7 @@ export function trackingFromHistory(
         title: info.title,
         issueType: info.issueType,
         url: info.url,
+        points: info.points ?? null,
         parentId,
         state: s.state,
         ...(s.state === 'closed' ? { closeReason: s.reason ?? 'completed' } : {}),
@@ -926,6 +943,9 @@ export function trackingFromHistory(
   const warnings: string[] = [];
   if (h.unreadable > 0) {
     warnings.push(`${countOf(h.unreadable, "sub-issue isn't", "sub-issues aren't")} counted: the planner's GitHub access can't read ${h.unreadable === 1 ? 'it' : 'them'}.`);
+  }
+  if (h.pointsReadable === false) {
+    warnings.push(`Can't read the project board's Points, so every issue counts as ${DEFAULT_POINTS} points.`);
   }
   if (undated > 0) {
     warnings.push(`GitHub has no record of when ${countOf(undated, 'issue was', 'issues were')} added, so ${undated === 1 ? 'it counts' : 'they count'} from creation.`);
