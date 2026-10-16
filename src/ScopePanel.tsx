@@ -9,6 +9,7 @@ import {
   canForecast,
   hasSubIssues,
   isCreep,
+  pointsOf,
   issueKey,
   maxCreepForTarget,
   milestoneNames,
@@ -147,27 +148,27 @@ function explain(s: ScopeSummary, rootNumber: number): string {
       const took = s.startedAt && s.finishedAt
         ? ` Took ${plural(roundWeeks((Date.parse(s.finishedAt) - Date.parse(s.startedAt)) / WEEK), 'week')} from the first finished issue to the last.`
         : '';
-      return `All ${plural(s.current.scope, 'issue')} are closed.${took}`;
+      return `All issues are closed (${plural(s.current.scope, 'point')}).${took}`;
     }
     case 'not-started':
-      return `${plural(s.current.scope, 'issue')} planned, none finished yet. Work counts as started when the first one is finished.`;
+      return `${plural(s.current.scope, 'point')} planned, none finished yet. Work counts as started when the first one is finished.`;
     case 'just-started':
       return `Work started ${started}. Until it's been ${RAMP_WEEKS} weeks, the forecast leans on ` +
         `${listLabels(s.pace?.references.map(r => r.label) ?? [])}'s pace.`;
     case 'too-early':
       return `Work started ${started}. A forecast needs ${MIN_HISTORY_DAYS} days and ${MIN_COMPLETIONS} finished ` +
-        'issues, or a finished milestone to compare with.';
+        'points, or a finished milestone to compare with.';
     case 'no-progress':
       return `Nothing was finished or added in the last ${plural(Math.round(own?.windowWeeks ?? 4), 'week')}.`;
     case 'converging':
     case 'not-converging': {
       if (!own) return '';
-      const parts = [`${own.completed} finished`, `${own.creep} new`];
+      const parts = [`${own.completed} points finished`, `${own.creep} new`];
       if (own.movedOut) parts.push(`${own.movedOut} moved out`);
       if (own.dropped) parts.push(`${own.dropped} dropped`);
       let text = `In the last ${plural(Math.round(own.windowWeeks), 'week')}: ${parts.join(', ')}.`;
       if (s.highCreep && own.completionRate > 0) {
-        text += ` That's ${fmtRate(own.creepRate / own.completionRate)} new issues for every one finished.`;
+        text += ` That's ${fmtRate(own.creepRate / own.completionRate)} new points for every one finished.`;
       }
       return text;
     }
@@ -577,7 +578,7 @@ function MilestoneTable({ analysis, names, selectedId, onSelect, targetFor }: {
             <tr className="border-b border-ink-200 bg-ink-50/60 text-left text-[10px] font-semibold uppercase tracking-[0.06em] text-ink-500">
               <th scope="col" className="px-3 py-1.5">Milestone</th>
               <th scope="col" className="px-2 py-1.5">Done</th>
-              <th scope="col" className="px-2 py-1.5" title="New issues per week, not counting splits or moves between milestones">Creep</th>
+              <th scope="col" className="px-2 py-1.5" title="New points per week, not counting splits or moves between milestones">Creep</th>
               <th scope="col" className="px-2 py-1.5" title="Week the remaining work finishes at the current creep rate">Finish</th>
               <th scope="col" className="px-2 py-1.5">Status</th>
             </tr>
@@ -639,10 +640,10 @@ function CreepCell({ summary: s }: { summary: ScopeSummary }) {
   if (!established(s) || !s.pace) return <span className="text-ink-300">—</span>;
   const tone = creepTone(s);
   const { completionRate, creepRate } = s.pace;
-  const ratio = completionRate > 0 ? `${fmtRate(creepRate / completionRate)} new per issue finished` : 'nothing finished';
+  const ratio = completionRate > 0 ? `${fmtRate(creepRate / completionRate)} new per point finished` : 'nothing finished';
   return (
     <span
-      title={`${fmtRate(creepRate)} new issues/week · ${ratio}${s.highCreep ? ' (high)' : ''}`}
+      title={`${fmtRate(creepRate)} new points/week · ${ratio}${s.highCreep ? ' (high)' : ''}`}
       className={'tabular-nums ' + (tone === 'neutral' ? 'text-ink-600' : `rounded-full border px-1.5 py-[1px] font-medium ${TONE_PILL[tone]}`)}
     >
       {fmtRate(creepRate)}/wk
@@ -757,20 +758,20 @@ function Verdict({ summary: s, rootNumber }: { summary: ScopeSummary; rootNumber
 
 function Stats({ summary: s }: { summary: ScopeSummary }) {
   const grew = s.baseline.scope !== s.current.scope;
-  const creepCount = s.events.filter(isCreep).length;
+  const creepCount = s.events.filter(isCreep).reduce((n, e) => n + pointsOf(e.issue), 0);
   const pace = s.pace;
   const creep = established(s) && pace
     ? {
         value: `${fmtRate(pace.creepRate)}/wk`,
-        hint: pace.completionRate > 0 ? `${fmtRate(pace.creepRate / pace.completionRate)} per issue finished` : 'nothing finished',
+        hint: pace.completionRate > 0 ? `${fmtRate(pace.creepRate / pace.completionRate)} per point finished` : 'nothing finished',
         tone: creepTone(s),
       }
     : { value: `${creepCount} new`, hint: s.status === 'done' ? 'while in progress' : 'since work started', tone: 'neutral' as Tone };
   const items: { label: string; value: string; hint: string; tone?: Tone }[] = [
-    { label: 'Scope', value: grew ? `${s.baseline.scope} → ${s.current.scope}` : `${s.current.scope}`, hint: grew ? 'at start → now' : 'same as at start' },
+    { label: 'Scope (pts)', value: grew ? `${s.baseline.scope} → ${s.current.scope}` : `${s.current.scope}`, hint: grew ? 'at start → now' : 'same as at start' },
     { label: 'Creep', ...creep },
-    { label: 'Finished', value: `${s.current.completed}`, hint: `of ${s.current.scope}` },
-    { label: 'Remaining', value: `${s.remaining}`, hint: 'open' },
+    { label: 'Finished (pts)', value: `${s.current.completed}`, hint: `of ${s.current.scope}` },
+    { label: 'Remaining', value: `${s.remaining}`, hint: 'pts open' },
   ];
   return (
     <dl className="grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -882,7 +883,7 @@ function BurnUpChart({ summary: s, multiplier, target, showTrend }: {
     <figure className="m-0">
       <div ref={boxRef} className="relative" style={{ height: CHART_H }}>
         {width > 0 && (
-          <svg width={width} height={CHART_H} role="img" aria-label="Scope and finished issues over time" className="block overflow-visible">
+          <svg width={width} height={CHART_H} role="img" aria-label="Scope and finished points over time" className="block overflow-visible">
             {yTicks.map(v => (
               <g key={v}>
                 <line x1={PAD.l} x2={width - PAD.r} y1={y(v)} y2={y(v)} className="stroke-ink-100" />
@@ -955,7 +956,7 @@ function BurnUpChart({ summary: s, multiplier, target, showTrend }: {
             style={{ left: Math.min(Math.max(hoverX, 90), width - 90) }}
           >
             <span className="font-semibold text-ink-900">{fmtDay(hoverT)}</span>
-            {' · '}Scope {hovered.scope} · Finished {hovered.completed} · Remaining {hovered.scope - hovered.completed}
+            {' · '}Scope {hovered.scope} pts · Finished {hovered.completed} · Remaining {hovered.scope - hovered.completed}
           </div>
         )}
       </div>
@@ -1010,7 +1011,7 @@ function breakEvenText(s: ScopeSummary, target: Target): string | null {
   if (maxCreep == null) return 'The target date has passed.';
   const creep = s.pace.creepRate;
   if (maxCreep <= 0.05) return `Misses ${day} even with no new scope.`;
-  if (creep <= 0) return `Hits ${day} if new issues stay under ${fmtRate(maxCreep)}/week.`;
+  if (creep <= 0) return `Hits ${day} if new points stay under ${fmtRate(maxCreep)}/week.`;
   const m = maxCreep / creep;
   if (m >= 2) return `Hits ${day} even at 2× creep.`;
   return m >= 1
@@ -1032,11 +1033,11 @@ function paceText(s: ScopeSummary, pace: Pace): string {
   }
   if (pace.references.length > 0) {
     const mine = Math.round(pace.ownWeight * 100);
-    return `Finishing ~${fmtRate(pace.completionRate)}/week · ~${fmtRate(pace.creepRate)} new/week · ${mine}% this milestone, ${100 - mine}% ${refs}`;
+    return `Finishing ~${fmtRate(pace.completionRate)} pts/week · ~${fmtRate(pace.creepRate)} new/week · ${mine}% this milestone, ${100 - mine}% ${refs}`;
   }
   const own = pace.own;
   const window = own ? ` · ${fmtDay(Date.parse(own.windowStart))}–${fmtDay(Date.parse(s.asOf))}` : '';
-  return `Finishing ${fmtRate(pace.completionRate)}/week · ${fmtRate(pace.creepRate)} new/week${window}`;
+  return `Finishing ${fmtRate(pace.completionRate)} pts/week · ${fmtRate(pace.creepRate)} new/week${window}`;
 }
 
 function ForecastBox({ summary: s, pace, multiplier, onMultiplier, target }: {
@@ -1108,7 +1109,7 @@ function ForecastBox({ summary: s, pace, multiplier, onMultiplier, target }: {
             finished milestone.
           </li>
           <li>
-            Creep is high at {Math.round(1 / HIGH_CREEP_RATIO) === 2 ? '1 new issue for every 2 finished' : `${HIGH_CREEP_RATIO} new issues per finished issue`}.
+            Creep is high at {Math.round(1 / HIGH_CREEP_RATIO) === 2 ? '1 new point for every 2 finished' : `${HIGH_CREEP_RATIO} new points per finished point`}.
             At 1 for every 1, a milestone never finishes.
           </li>
           <li>These are rough, week-level estimates, not commitments.</li>

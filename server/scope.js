@@ -22,6 +22,9 @@ const BATCH_SIZE = 10;
 /** A milestone's parent epic is fetched too (for moves and finished milestones' pace) if it's this small. */
 const MAX_CONTEXT_CHILDREN = 30;
 
+/** Project (v2) field holding an issue's size. Issues without a numeric value count as DEFAULT_POINTS in the browser. */
+const POINTS_FIELD = 'Points';
+
 const ISSUE_URL = /^https?:\/\/github\.com\/([\w.-]+)\/([\w.-]+)\/issues\/(\d+)\/?(?:[?#].*)?$/i;
 
 export function parseIssueUrl(url) {
@@ -116,6 +119,42 @@ function normalizeEvent(node) {
     default:
       return null;
   }
+}
+
+/** First numeric Points value across the projects an issue belongs to; null when none. */
+export function pointsFrom(projectItems) {
+  for (const item of projectItems?.nodes ?? []) {
+    const v = item?.fieldValueByName;
+    const raw = v?.name ?? v?.number ?? v?.text;
+    const n = typeof raw === 'number' ? raw : Number(String(raw ?? '').trim() || NaN);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return null;
+}
+
+/** Each issue's Points from its project items. Needs read access to the project; when
+ *  that's missing, returns null so scope still loads and every issue uses the default. */
+async function fetchPoints(token, ids) {
+  const points = new Map();
+  try {
+    for (let i = 0; i < ids.length; i += 50) {
+      const batch = ids.slice(i, i + 50);
+      const res = await graphql(token, `query($ids: [ID!]!) { nodes(ids: $ids) { ... on Issue { id
+        projectItems(first: 20) { nodes { fieldValueByName(name: "${POINTS_FIELD}") {
+          ... on ProjectV2ItemFieldSingleSelectValue { name }
+          ... on ProjectV2ItemFieldNumberValue { number }
+          ... on ProjectV2ItemFieldTextValue { text }
+        } } }
+      } } }`, { ids: batch });
+      if ((res.errors ?? []).length > 0) return null;
+      for (const node of res.data.nodes ?? []) if (node?.id) points.set(node.id, pointsFrom(node.projectItems));
+    }
+  } catch (e) {
+    // Only a denial means no Projects access; anything else keeps the last good cache.
+    if (e instanceof GitHubError && (e.kind === 'auth' || e.kind === 'graphql')) return null;
+    throw e;
+  }
+  return points;
 }
 
 /** Fetches any further pages of an issue's sub-issues and history. */
@@ -214,6 +253,9 @@ async function fetchHistory(token, ref) {
     level = next;
   }
 
+  const points = await fetchPoints(token, [...issues.keys()]);
+  for (const issue of issues.values()) issue.points = points?.get(issue.id) ?? null;
+
   return {
     history: {
       fetchedAt: new Date().toISOString(),
@@ -221,6 +263,7 @@ async function fetchHistory(token, ref) {
       contextId,
       issues: [...issues.values()],
       unreadable,
+      pointsReadable: points !== null,
     },
   };
 }
@@ -255,8 +298,9 @@ export function createScopeService({ db, token, repos }) {
 
   const allowed = (repos ?? []).map(r => r.trim().toLowerCase()).filter(Boolean);
   const inflight = new Map();
+  // Cached before issue types or points were fetched.
   const lacksIssueTypes = (row) => row?.history
-    && JSON.parse(row.history).issues.some(issue => issue.issueType === undefined);
+    && JSON.parse(row.history).issues.some(issue => issue.issueType === undefined || issue.points === undefined);
 
   const refresh = (ref) => {
     const key = issueKey(ref);
