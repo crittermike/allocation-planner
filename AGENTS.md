@@ -15,9 +15,9 @@ Guidance for agents working on this app.
 - Local dev: `npm run dev` (Vite on :5173, server on :8787; Vite proxies `/api` and `/ws`)
 - Typecheck + production build: `npm run build`
 - Production server: `npm start`
-- Deploy: `~/.fly/bin/flyctl deploy` (Fly.io app is `allocation-planner`; `fly deploy` works if `flyctl` is on PATH)
+- Deploy: automatic on every push to `main` after CI passes (`deploy` job in `.github/workflows/ci.yml`, uses the `FLY_API_TOKEN` repo secret). Manual: `~/.fly/bin/flyctl deploy` (Fly.io app is `allocation-planner`; `fly deploy` works if `flyctl` is on PATH)
 
-Run `npm run build` before claiming code changes are complete — it both typechecks (`tsc -b`) and bundles. Run `npm test` for unit tests (`node --test test/*.test.ts`). There is no lint script. GitHub Actions (`.github/workflows/ci.yml`) runs the same build on every push to `main` and on every PR.
+Run `npm run build` before claiming code changes are complete — it both typechecks (`tsc -b`) and bundles. Run `npm test` for unit tests (`node --test test/*.test.ts`). There is no lint script. GitHub Actions (`.github/workflows/ci.yml`) runs the same build on every push to `main` and on every PR, then deploys `main` to Fly.
 
 ## Important files
 
