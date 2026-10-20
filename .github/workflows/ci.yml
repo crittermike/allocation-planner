@@ -32,9 +32,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Builds can finish out of order; skip if a newer commit has landed so an old run can't roll prod back.
+      - name: Check this is still the latest main
+        id: fresh
+        run: |
+          latest=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [ "$latest" = "$GITHUB_SHA" ]; then echo "deploy=true" >> "$GITHUB_OUTPUT"; else echo "Skipping: main is now $latest"; fi
+
       - uses: superfly/flyctl-actions/setup-flyctl@master
+        if: steps.fresh.outputs.deploy == 'true'
 
       - name: Deploy to Fly
+        if: steps.fresh.outputs.deploy == 'true'
         run: flyctl deploy --remote-only
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
