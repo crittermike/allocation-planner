@@ -172,6 +172,18 @@ function BarRow({
         {segments.map(seg => {
           const isHovered = highlightedProjectId === seg.id;
           const isDimmed = hasHover && !isHovered;
+          // When the capacity marker crosses this segment, keep the label on the larger side of it.
+          const showMarker = hasConfiguredQuarter && capacityEM > 0 && capacityPct < 100;
+          const split = showMarker && capacityPct > seg.startPct && capacityPct < seg.startPct + seg.pct
+            ? (capacityPct - seg.startPct) / seg.pct
+            : null;
+          const labelOnRight = split != null && split < 0.5;
+          const roomPct = split == null ? seg.pct : seg.pct * (labelOnRight ? 1 - split : split);
+          const labelStyle = split == null
+            ? undefined
+            : labelOnRight
+              ? { marginLeft: `calc(${split * 100}% + 2px)`, width: `calc(${(1 - split) * 100}% - 2px)` }
+              : { maxWidth: `calc(${split * 100}% - 8px)` };
           return (
             <div
               key={seg.id}
@@ -187,12 +199,12 @@ function BarRow({
                 backgroundColor: seg.color,
                 color: inkFor(seg.color),
                 opacity: isDimmed ? 0.35 : seg.overCapacity ? 0.55 : 1,
-                justifyContent: seg.pct > 10 ? 'flex-start' : 'center',
+                justifyContent: roomPct > 10 || split != null ? 'flex-start' : 'center',
               }}
             >
-              {seg.pct > 6 && (
-                <span className="flex w-full min-w-0 items-baseline gap-1.5">
-                  {seg.pct > 10 && (
+              {roomPct > 6 && (
+                <span className="flex w-full min-w-0 items-baseline gap-1.5" style={labelStyle}>
+                  {roomPct > 10 && (
                     <span className="min-w-0 flex-1 truncate font-medium opacity-90">{seg.name || 'Untitled'}</span>
                   )}
                   <span className="shrink-0">{fmtNum(seg.em, 1)}</span>
@@ -215,7 +227,12 @@ function BarRow({
             title={`Capacity: ${fmtNum(capacityEM, 1)} EM`}
           >
             {markerVariant !== 'bottom' && (
-              <div className="absolute -right-1 -top-2 h-2 w-2 rounded-full bg-ink-900" />
+              <div
+                className="absolute bottom-full mb-0.5 whitespace-nowrap text-[10px] font-semibold tabular-nums text-ink-700"
+                style={capacityPct > 90 ? { right: 0 } : { left: '50%', transform: 'translateX(-50%)' }}
+              >
+                {fmtNum(capacityEM, 1)} EM
+              </div>
             )}
           </div>
         )}
@@ -240,7 +257,7 @@ function BarRow({
         >
           <span>{hovered.name || 'Untitled'}</span>
           <span className="ml-1.5 text-[10px] font-normal opacity-80">
-            {fmtNum(hovered.em, 2)} EM{hovered.overCapacity ? ' · over capacity' : ''}
+            {fmtNum(hovered.em)} EM{hovered.overCapacity ? ' · over capacity' : ''}
           </span>
           <span
             className={
@@ -253,7 +270,7 @@ function BarRow({
           />
         </div>
       )}
-      <div className="w-[96px] shrink-0 text-right">
+      <div className="w-[120px] shrink-0 text-right">
         {hideDelta || (!over && !under) ? (
           <div className="text-[12px] font-semibold tabular-nums text-ink-400">
             {hasConfiguredQuarter ? 'On target' : ''}
@@ -264,10 +281,10 @@ function BarRow({
               'inline-flex items-baseline gap-1 rounded-md px-2 py-1 text-[12px] font-semibold tabular-nums ' +
               (over ? 'bg-rose-50 text-rose-700' : 'bg-emerald-50 text-emerald-700')
             }
-            title={over ? `Over capacity by ${fmtNum(deltaAbs, 1)} EM` : `Under capacity by ${fmtNum(deltaAbs, 1)} EM`}
+            title={over ? `Over capacity by ${fmtNum(deltaAbs, 1)} EM` : `${fmtNum(deltaAbs, 1)} EM of capacity unplanned`}
           >
-            <span>{over ? '−' : '+'}{fmtNum(deltaAbs, 1)}</span>
-            <span className="text-[10px] font-normal opacity-70">EM</span>
+            <span>{fmtNum(deltaAbs, 1)}</span>
+            <span className="text-[10px] font-normal opacity-70">EM {over ? 'over' : 'unplanned'}</span>
           </div>
         )}
       </div>
@@ -324,7 +341,7 @@ export function CapacityBars({
   );
 
   return (
-    <div className="space-y-2.5">
+    <div className={'space-y-2.5' + (hasConfiguredQuarter && capacityEM > 0 && capacityPct < 100 ? ' pt-3.5' : '')}>
       <BarRow
         label="Estimate"
         segments={estimateSegments}
@@ -836,8 +853,8 @@ function InitiativeRow({
     <>
       {isFitLine && showWhatFits && (
         <tr aria-hidden>
-          <td colSpan={7} className="border-y-2 border-dashed border-rose-300 bg-rose-50/40 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-rose-700">
-            ↓ Below the line: over capacity. Consider descoping.
+          <td colSpan={7} className="border-t border-rose-200 px-3 pb-0.5 pt-1 text-[11px] font-medium text-rose-600">
+            Over capacity
           </td>
         </tr>
       )}
@@ -1186,9 +1203,9 @@ export function exportPlanMarkdown(
     lines.push('| # | Project | EM est | EM planned | Release date | Notes |');
     lines.push('|---|---------|-------:|-----------:|--------------|-------|');
     activeInitiatives.forEach((p, i) => {
-      const est = p.estimateEM != null ? fmtNum(p.estimateEM, 2) : '—';
+      const est = p.estimateEM != null ? fmtNum(p.estimateEM) : '—';
       const plannedEMVal = (plannedByProject[p.id] ?? 0) / WEEKS_PER_EM;
-      const planned = plannedEMVal > 0 ? fmtNum(plannedEMVal, 2) : '0';
+      const planned = plannedEMVal > 0 ? fmtNum(plannedEMVal) : '0';
       const releaseDate = p.releaseDate ? escapeMd(p.releaseDate) : '—';
       const notes = p.notes ? escapeMd(p.notes) : '';
       lines.push(`| ${i + 1} | ${escapeMd(p.name)} | ${est} | ${planned} | ${releaseDate} | ${notes} |`);
@@ -1215,7 +1232,7 @@ export function exportPlanMarkdown(
     lines.push('| # | Project | EM est | Release date | Notes |');
     lines.push('|---|---------|-------:|--------------|-------|');
     descopedInitiatives.forEach((p, i) => {
-      const est = p.estimateEM != null ? fmtNum(p.estimateEM, 2) : '—';
+      const est = p.estimateEM != null ? fmtNum(p.estimateEM) : '—';
       const releaseDate = p.releaseDate ? escapeMd(p.releaseDate) : '—';
       const notes = p.notes ? escapeMd(p.notes) : '';
       lines.push(`| ${i + 1} | ${escapeMd(p.name)} | ${est} | ${releaseDate} | ${notes} |`);
