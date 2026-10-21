@@ -13,8 +13,10 @@ import {
   issueKey,
   maxCreepForTarget,
   milestoneNames,
+  netChanges,
   parseGitHubIssueUrl,
   projectFinish,
+  targetStatus,
   trackingFromHistory,
   type FinishForecast,
   type ForecastStatus,
@@ -28,6 +30,7 @@ import {
   type ScopeSummary,
   type ScopeTracking,
   type ScopeView,
+  type TargetStatus,
 } from './scope';
 import { requestScope, type ScopeConfig, type ScopeResponse } from './scopeApi';
 import { DEMO_SCENARIOS, demoScope, isDemoIssue, type DemoScenario } from './scopeDemo';
@@ -91,13 +94,6 @@ function ago(ms: number): string {
   return `${plural(Math.round(hours / 24), 'day')} ago`;
 }
 
-function dayLabel(ms: number): string {
-  const diff = Math.round((startOfDay(Date.now()) - startOfDay(ms)) / DAY);
-  if (diff === 0) return 'Today';
-  if (diff === 1) return 'Yesterday';
-  return fmtDay(ms);
-}
-
 function listLabels(labels: string[]): string {
   if (labels.length <= 1) return labels[0] ?? '';
   if (labels.length === 2) return `${labels[0]} and ${labels[1]}`;
@@ -116,6 +112,18 @@ const STATUS: Record<ForecastStatus, { label: string; headline?: string; tone: T
   done: { label: 'Done', headline: 'All issues are done', tone: 'good' },
   empty: { label: 'No sub-issues', headline: 'No sub-issues yet', tone: 'neutral' },
 };
+const TARGET_STATUS: Record<Exclude<TargetStatus, 'on-track'>, { label: string; headline: string; tone: Tone }> = {
+  late: { label: 'Late', headline: 'Finishes after target', tone: 'bad' },
+  'at-risk': { label: 'At risk', headline: 'Might miss target', tone: 'warn' },
+};
+
+/** Status shown for a milestone: a forecast that misses the target outranks a good pace. */
+function shownStatus(s: ScopeSummary, target: Target | null) {
+  const base = STATUS[s.status];
+  const vs = targetStatus(s, target?.date);
+  return base.tone === 'bad' || !vs || vs === 'on-track' ? base : TARGET_STATUS[vs];
+}
+
 const TONE_PILL: Record<Tone, string> = {
   good: 'border-emerald-200 bg-emerald-50 text-emerald-700',
   bad: 'border-rose-200 bg-rose-50 text-rose-700',
@@ -219,8 +227,8 @@ type PanelProps = {
 /** A GitHub milestone sub-issue, with its display name. */
 export type FoundMilestone = { name: string; url: string };
 
-/** Whether there's anything to show: sub-issues or a problem worth reporting ("content"). */
-export type ScopeStatus = 'loading' | 'content' | 'none';
+/** Whether there's anything to show: sub-issues ("content"), or a one-line problem ("notice"). */
+export type ScopeStatus = 'loading' | 'content' | 'notice' | 'none';
 
 function useReportStatus(issueUrl: string, status: ScopeStatus, onStatusChange?: PanelProps['onStatusChange']) {
   useEffect(() => {
@@ -274,13 +282,12 @@ function PanelFrame({ status, aside, children }: { status?: ReactNode; aside?: R
 
 function Unreadable({ issue, at }: { issue: GitHubIssueRef; at: string }) {
   return (
-    <div className="rounded-lg border border-rose-200 bg-rose-50 px-3.5 py-3 text-[12.5px] text-rose-700">
-      <div className="font-semibold">Can't read {issue.owner}/{issue.repo}#{issue.number}</div>
-      <p className="mt-1 leading-relaxed">
-        The planner's GitHub access doesn't cover this repo, or the issue doesn't exist. Scope shows up
-        automatically once the issue can be read. Last tried {ago(Date.parse(at))}.
-      </p>
-    </div>
+    <span
+      className="text-[12px] text-ink-500"
+      title={`The planner's GitHub access doesn't cover this repo, or the issue doesn't exist. Last tried ${ago(Date.parse(at))}.`}
+    >
+      Can't read {issue.owner}/{issue.repo}#{issue.number}
+    </span>
   );
 }
 
@@ -291,12 +298,12 @@ function DemoScope({ issue, releaseDate, projects, onStatusChange, milestone, on
   const [scenario, setScenario] = useState<DemoScenario>(() => chosenScenarios.get(issue.url) ?? 'normal');
   const load = useMemo(() => demoScope(issue, scenario), [issue.url, scenario]);
   // The scenario switcher stays reachable even when a scenario has no sub-issues.
-  useReportStatus(issue.url, 'content', onStatusChange);
+  useReportStatus(issue.url, load.status === 'unreadable' ? 'notice' : 'content', onStatusChange);
   return (
     <PanelFrame
-      status={load.status === 'ready' && (
-        <span className="text-[11.5px] text-ink-500">Updated {ago(Date.parse(load.tracking.checkedAt))}</span>
-      )}
+      status={load.status === 'ready'
+        ? <span className="text-[11.5px] text-ink-500">Updated {ago(Date.parse(load.tracking.checkedAt))}</span>
+        : <Unreadable issue={issue} at={load.at} />}
       aside={
         <label
           className="inline-flex items-center gap-1.5 rounded-full border border-amber-100 bg-amber-50 py-0.5 pl-2.5 pr-0.5 text-[11px] font-semibold text-amber-800"
@@ -319,9 +326,7 @@ function DemoScope({ issue, releaseDate, projects, onStatusChange, milestone, on
         </label>
       }
     >
-      {load.status === 'unreadable' ? (
-        <Unreadable issue={issue} at={load.at} />
-      ) : (
+      {load.status === 'ready' && (
         <ScopeDetails
           key={scenario}
           tracking={load.tracking}
@@ -408,45 +413,49 @@ function GitHubScope({
     ? 'loading'
     : (tracking && !hasSubIssues(tracking)) || (response.status === 'error' && response.code === 403)
       ? 'none'
-      : 'content';
+      : response.status === 'ready' ? 'content' : 'notice';
   useReportStatus(issue.url, status, onStatusChange);
   const busy = refreshing || (response?.status === 'ready' && response.refreshing);
 
   return (
     <PanelFrame
-      status={response?.status === 'ready' && (
-        <button
-          type="button"
-          onClick={refresh}
-          disabled={busy}
-          title="Refresh from GitHub"
-          className="inline-flex items-center gap-1 rounded text-[11.5px] text-ink-500 transition hover:text-ink-800 disabled:cursor-progress"
-        >
-          <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden className={busy ? 'animate-spin' : ''}>
-            <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9" />
-            <path d="M13.5 2.5v3h-3" />
-          </svg>
-          {busy ? 'Refreshing…' : `Updated ${ago(Date.parse(response.checkedAt))}`}
-        </button>
-      )}
+      status={
+        response?.status === 'ready' ? (
+          <button
+            type="button"
+            onClick={refresh}
+            disabled={busy}
+            title="Refresh from GitHub"
+            className="inline-flex items-center gap-1 rounded text-[11.5px] text-ink-500 transition hover:text-ink-800 disabled:cursor-progress"
+          >
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden className={busy ? 'animate-spin' : ''}>
+              <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9" />
+              <path d="M13.5 2.5v3h-3" />
+            </svg>
+            {busy ? 'Refreshing…' : `Updated ${ago(Date.parse(response.checkedAt))}`}
+          </button>
+        ) : response?.status === 'unreadable' ? (
+          <Unreadable issue={issue} at={response.at} />
+        ) : response?.status === 'error' && (
+          <span className="text-[12px] text-ink-500" title={response.message}>
+            Couldn't load scope from GitHub
+            {response.code === undefined && (
+              <>
+                {' · '}
+                <button type="button" onClick={refresh} disabled={busy} className="font-medium text-ink-700 hover:underline disabled:opacity-60">
+                  {busy ? 'Trying again…' : 'Try again'}
+                </button>
+              </>
+            )}
+          </span>
+        )
+      }
     >
       {!response && (
         <p role="status" className="flex items-center gap-2 text-[12.5px] text-ink-500">
           <Spinner />
           Loading from GitHub… The first load can take a few seconds.
         </p>
-      )}
-      {response?.status === 'unreadable' && <Unreadable issue={issue} at={response.at} />}
-      {response?.status === 'error' && (
-        <div className="rounded-lg border border-rose-200 bg-rose-50 px-3.5 py-3 text-[12.5px] text-rose-700">
-          <div className="font-semibold">Couldn't load scope from GitHub</div>
-          <p className="mt-1 leading-relaxed">{response.message}</p>
-          {response.code === undefined && (
-            <button type="button" onClick={refresh} disabled={busy} className="mt-1.5 font-medium underline disabled:opacity-60">
-              {busy ? 'Trying again…' : 'Try again'}
-            </button>
-          )}
-        </div>
       )}
       {tracking && (
         <ScopeDetails
@@ -606,7 +615,7 @@ function MilestoneTable({ analysis, names, selectedId, onSelect, targetFor }: {
                   <td className="px-2 py-1.5"><Progress done={v.summary.current.completed} total={v.summary.current.scope} /></td>
                   <td className="px-2 py-1.5"><CreepCell summary={v.summary} /></td>
                   <td className="px-2 py-1.5"><FinishCell summary={v.summary} target={targetFor(v)} /></td>
-                  <td className="px-2 py-1.5"><StatusPill status={v.summary.status} /></td>
+                  <td className="px-2 py-1.5"><StatusPill summary={v.summary} target={targetFor(v)} /></td>
                 </tr>
               );
             })}
@@ -691,8 +700,8 @@ function weekRange(f: FinishForecast): string {
   return lo === hi ? `${lo} wks` : `${lo}–${hi} wks`;
 }
 
-function StatusPill({ status }: { status: ForecastStatus }) {
-  const { label, tone } = STATUS[status];
+function StatusPill({ summary, target }: { summary: ScopeSummary; target: Target | null }) {
+  const { label, tone } = shownStatus(summary, target);
   return (
     <span className={'inline-flex max-w-full items-center gap-1.5 truncate rounded-full border px-2 py-[1px] text-[11px] font-medium ' + TONE_PILL[tone]}>
       <span className={'h-1.5 w-1.5 shrink-0 rounded-full ' + TONE_DOT[tone]} aria-hidden />
@@ -724,7 +733,7 @@ function MilestoneDetail({ view, name, target, showHeading, rootNumber, demo }: 
           <IssueNumberLink issue={view.issue} demo={demo} />
         </div>
       )}
-      <Verdict summary={s} rootNumber={rootNumber} />
+      <Verdict summary={s} target={target} rootNumber={rootNumber} />
       {s.status !== 'empty' && s.status !== 'not-started' && <Stats summary={s} />}
       {showChart && (
         <BurnUpChart summary={s} multiplier={multiplier} target={target} showTrend={forecastable} />
@@ -738,8 +747,8 @@ function MilestoneDetail({ view, name, target, showHeading, rootNumber, demo }: 
   );
 }
 
-function Verdict({ summary: s, rootNumber }: { summary: ScopeSummary; rootNumber: number }) {
-  const { label, headline, tone } = STATUS[s.status];
+function Verdict({ summary: s, target, rootNumber }: { summary: ScopeSummary; target: Target | null; rootNumber: number }) {
+  const { label, headline, tone } = shownStatus(s, target);
   return (
     <div>
       <div className="flex flex-wrap items-center gap-2">
@@ -1257,23 +1266,31 @@ function Disclosure({ title, count, aside, defaultOpen, children }: {
 
 const CHANGE_LIMIT = 8;
 
-function ChangeList({ events, demo }: { events: ScopeEvent[]; demo: boolean }) {
+function weekLabel(monday: number): string {
+  const diff = Math.round((mondayOf(Date.now()) - monday) / WEEK);
+  if (diff === 0) return 'This week';
+  if (diff === 1) return 'Last week';
+  return `Week of ${fmtDay(monday)}`;
+}
+
+function ChangeList({ events: all, demo }: { events: ScopeEvent[]; demo: boolean }) {
   const [showAll, setShowAll] = useState(false);
+  const events = useMemo(() => netChanges(all), [all]);
   const shown = showAll ? events : events.slice(0, CHANGE_LIMIT);
-  const days: { key: number; events: ScopeEvent[] }[] = [];
+  const weeks: { key: number; events: ScopeEvent[] }[] = [];
   for (const e of shown) {
-    const key = startOfDay(Date.parse(e.at));
-    if (days[days.length - 1]?.key === key) days[days.length - 1].events.push(e);
-    else days.push({ key, events: [e] });
+    const key = mondayOf(Date.parse(e.at));
+    if (weeks[weeks.length - 1]?.key === key) weeks[weeks.length - 1].events.push(e);
+    else weeks.push({ key, events: [e] });
   }
   const creep = events.filter(isCreep).length;
   return (
     <Disclosure title="Changes since work started" count={events.length} aside={creep ? `${creep} new` : undefined} defaultOpen>
-      {days.map(day => (
-        <div key={day.key} className="px-3 py-1.5">
-          <div className="mb-1 text-[11px] font-semibold text-ink-500">{dayLabel(day.key)}</div>
+      {weeks.map(week => (
+        <div key={week.key} className="px-3 py-1.5">
+          <div className="mb-1 text-[11px] font-semibold text-ink-500">{weekLabel(week.key)}</div>
           <ul className="space-y-1">
-            {day.events.map((e, i) => {
+            {week.events.map((e, i) => {
               const b = badge(e);
               return (
                 <li key={`${e.issue.id}-${e.kind}-${i}`} className="flex min-w-0 items-baseline gap-2 text-[12.5px]">

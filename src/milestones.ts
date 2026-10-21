@@ -159,8 +159,12 @@ export function scheduledReleases(projects: Project[]): ScheduledRelease[] {
   const out: ScheduledRelease[] = [];
   for (const project of projects) {
     if (project.descoped) continue;
-    if (project.releaseDate) out.push({ key: project.id, project, releaseDate: project.releaseDate });
-    (project.milestones ?? []).forEach(milestone => {
+    const milestones = project.milestones ?? [];
+    // A milestone shipping the same day already stands for the project's release.
+    if (project.releaseDate && !milestones.some(m => m.releaseDate === project.releaseDate)) {
+      out.push({ key: project.id, project, releaseDate: project.releaseDate });
+    }
+    milestones.forEach(milestone => {
       if (milestone.releaseDate) {
         out.push({ key: `${project.id}:${milestone.id}`, project, milestone, releaseDate: milestone.releaseDate });
       }

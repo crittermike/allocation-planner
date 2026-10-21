@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { syncGitHubMilestones } from '../src/milestones.ts';
+import { scheduledReleases, syncGitHubMilestones } from '../src/milestones.ts';
 
 const ids = () => { let n = 0; return () => `new${++n}`; };
 const A = { name: 'Alpha', url: 'https://github.com/o/r/issues/1' };
@@ -48,4 +48,13 @@ test('leaves manual milestones untouched and in place', () => {
   const out = syncGitHubMilestones([manual, { id: 'a', ...A, github: true }], [A, B], ids());
   assert.deepEqual(out, [manual, { id: 'a', ...A, github: true }, { id: 'new1', ...B, github: true }]);
   assert.equal(out![0], manual);
+});
+
+test('hides a project release when one of its milestones ships the same day', () => {
+  const project = (releaseDate: string) => ({
+    id: 'p', name: 'P', color: '#fff', driId: null, releaseDate,
+    milestones: [{ id: 'm1', name: 'M1', releaseDate: '2026-11-13' }, { id: 'm2', name: 'M2', releaseDate: '2026-11-27' }],
+  });
+  assert.deepEqual(scheduledReleases([project('2026-11-27')]).map(r => r.key), ['p:m1', 'p:m2']);
+  assert.deepEqual(scheduledReleases([project('2026-11-30')]).map(r => r.key), ['p:m1', 'p:m2', 'p']);
 });
