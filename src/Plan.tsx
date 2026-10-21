@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { navigate } from './router';
 import { usePlan, type ConnState, type PasswordError } from './usePlan';
@@ -30,7 +30,7 @@ import type { TargetStatus } from './scope';
 import { UndoToast } from './Toast';
 import { canUndoToast, type UndoToast as UndoToastState } from './undoToast';
 import { layoutRuns, type PersonLanes, type RunLayout, type RunSlot } from './runs';
-import { currentWeekId as findCurrentWeekId, dayOffset } from './weeks';
+import { currentWeekId as findCurrentWeekId } from './weeks';
 
 type ID = string;
 
@@ -2087,6 +2087,19 @@ function Chart(props: {
     window.addEventListener('mouseup', onUp);
   };
 
+  // The week header row sticks just below the iteration row, whose height depends on its content.
+  const iterRowRef = useRef<HTMLTableRowElement>(null);
+  const [iterRowH, setIterRowH] = useState(36);
+  useLayoutEffect(() => {
+    const el = iterRowRef.current;
+    if (!el) return;
+    const measure = () => setIterRowH(el.offsetHeight);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   return (
     <div
       className={
@@ -2094,10 +2107,10 @@ function Chart(props: {
         (extending ? ' select-none' : '')
       }
     >
-      <table className="border-separate border-spacing-0">
+      <table className="border-separate border-spacing-0" style={{ '--iter-row-h': `${iterRowH}px` } as React.CSSProperties}>
         <thead>
           {/* Iteration row */}
-          <tr>
+          <tr ref={iterRowRef}>
             <th
               rowSpan={2}
               data-chart-corner
@@ -2251,17 +2264,16 @@ function Chart(props: {
                   <th
                     key={`${iter.id}:collapsed`}
                     className={
-                      'sticky top-9 z-20 h-6 min-w-[120px] cursor-pointer border-b border-r-2 border-r-ink-300 px-2 text-[10.5px] font-medium tabular-nums ' +
+                      'sticky top-[var(--iter-row-h)] z-20 h-6 min-w-[120px] cursor-pointer border-b border-r-2 border-r-ink-300 px-2 pt-2 align-top text-[10.5px] font-medium tabular-nums ' +
                       weekToneClass
                     }
                     onClick={() => props.toggleIterationCollapsed(iter.id)}
                     title={`Expand iteration (${iterationDateRange(iter)})`}
                   >
                     <span className="opacity-80">{iterationDateRange(iter)}</span>
-                    <ShipMarker
+                    <WeekReleases
                       releases={weeks.flatMap(w => props.releasesByWeek[w.id] ?? [])}
-                      at={0.5}
-                      vertical={false}
+                      center
                       onEdit={props.onEditProject}
                     />
                   </th>
@@ -2276,7 +2288,7 @@ function Chart(props: {
                     key={w.id}
                     aria-current={isToday ? 'date' : undefined}
                     className={
-                      'sticky top-9 z-20 h-8 min-w-[160px] border-b px-2 text-center text-[11px] font-medium tabular-nums ' +
+                      'sticky top-[var(--iter-row-h)] z-20 h-8 min-w-[160px] border-b px-2 pt-2 text-center align-top text-[11px] font-medium tabular-nums ' +
                       weekToneClass +
                       ' border-r ' +
                       (isIterEnd
@@ -2286,12 +2298,7 @@ function Chart(props: {
                   >
                     {isToday && <TodayDot />}
                     {w.label}
-                    <ShipMarker
-                      releases={releases}
-                      at={releases?.length ? dayOffset(w.startDate, releases[0].releaseDate) : 0}
-                      vertical={false}
-                      onEdit={props.onEditProject}
-                    />
+                    <WeekReleases releases={releases} center onEdit={props.onEditProject} />
                   </th>
                 );
               });
@@ -2385,7 +2392,6 @@ function Chart(props: {
                       isDri={isDri}
                       isIterEnd={weekIdx === weeks.length - 1}
                       isCurrentWeek={tone === 'current'}
-                      shipLine={shipLineImage(props.releasesByWeek[w.id], w.startDate, false)}
                       isPastWeek={tone === 'past'}
                       highlightedProjectId={props.highlightedProjectId}
                       extendPreviewProject={extendPreviewProject}
@@ -2590,29 +2596,6 @@ function TodayDot() {
   return <span className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-amber-500 align-middle" title="This week" aria-hidden />;
 }
 
-type ShipStatus = TargetStatus | 'none';
-const SHIP_ORDER: ShipStatus[] = ['late', 'at-risk', 'on-track', 'none'];
-const SHIP_BG: Record<ShipStatus, string> = { ...FORECAST_DOT, none: 'bg-ink-500' };
-const SHIP_COLOR: Record<ShipStatus, string> = {
-  late: 'var(--color-rose-600)',
-  'at-risk': 'var(--color-amber-500)',
-  'on-track': 'var(--color-emerald-500)',
-  none: 'var(--color-ink-400)',
-};
-
-function shipStatus(releases: ScheduledRelease[]): ShipStatus {
-  const statuses = releases.map(r => r.forecast?.status ?? 'none');
-  return SHIP_ORDER.find(s => statuses.includes(s)) ?? 'none';
-}
-
-/** A hairline across a week's cells at its first ship date. */
-function shipLineImage(releases: ScheduledRelease[] | undefined, weekStart: string, vertical: boolean): string | undefined {
-  if (!releases?.length) return undefined;
-  const at = dayOffset(weekStart, releases[0].releaseDate) * 100;
-  const color = `color-mix(in srgb, ${SHIP_COLOR[shipStatus(releases)]} 45%, transparent)`;
-  return `linear-gradient(to ${vertical ? 'bottom' : 'right'}, transparent calc(${at}% - 0.5px), ${color} calc(${at}% - 0.5px), ${color} calc(${at}% + 0.5px), transparent calc(${at}% + 0.5px))`;
-}
-
 function describeRelease({ project, milestone, releaseDate, forecast }: ScheduledRelease) {
   const projectName = project.name || 'Untitled project';
   const name = milestone ? `${projectName} · ${milestoneLabel(milestone)}` : projectName;
@@ -2627,63 +2610,86 @@ function describeRelease({ project, milestone, releaseDate, forecast }: Schedule
     : '';
   return {
     name,
+    finish: forecast?.finishWeek ? day(forecast.finishWeek) : null,
     date: parseISODate(releaseDate).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }),
     kind: milestone ? 'Milestone ships' : 'Release',
     forecastText,
   };
 }
 
-/** One marker per week on the header edge, at the first ship date. Its color is
- *  the worst scope forecast in the week; click to list the releases. */
-function ShipMarker({ releases, at, vertical, onEdit }: {
+const RELEASE_TEXT: Record<TargetStatus, string> = {
+  'on-track': 'text-ink-600',
+  'at-risk': 'text-amber-700',
+  late: 'text-rose-600',
+};
+
+function RocketIcon() {
+  return (
+    <svg width="10" height="11" viewBox="0 0 14 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 opacity-70" aria-hidden>
+      <path d="M7 1.5C4.5 3.5 4 6 4 10.5h6C10 6 9.5 3.5 7 1.5Z" />
+      <path d="m4 7-2.5 3v3L4 11m6-4 2.5 3v3L10 11M5.5 13 7 15l1.5-2" />
+    </svg>
+  );
+}
+
+/** A week's releases as plain text under its date, like events on a calendar.
+ *  Past three, the rest fold into "+N more". */
+function WeekReleases({ releases, center, onEdit }: {
   releases: ScheduledRelease[] | undefined;
-  /** Position along the week, 0–1. */
-  at: number;
-  vertical: boolean;
+  center?: boolean;
   onEdit: (id: ID) => void;
 }) {
   const [rect, setRect] = useState<DOMRect | null>(null);
   if (!releases?.length) return null;
-  const status = shipStatus(releases);
-  const details = releases.map(describeRelease);
-  const summary = details
-    .map(d => `${d.name}\n${d.kind} ${d.date}${d.forecastText ? ` · ${d.forecastText}` : ''}`)
-    .join('\n\n');
+  const shown = releases.length > 3 ? releases.slice(0, 2) : releases;
   return (
-    <>
-      <button
-        type="button"
-        onClick={e => { e.stopPropagation(); setRect(rect ? null : e.currentTarget.getBoundingClientRect()); }}
-        title={summary}
-        aria-label={`${releases.length} ${releases.length === 1 ? 'release' : 'releases'}: ${summary.replace(/\n+/g, '; ')}`}
-        aria-expanded={!!rect}
-        className={
-          'group/ship absolute z-10 flex items-center gap-0.5 rounded-sm p-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-400 ' +
-          (vertical ? 'right-0 -mr-[7.5px] flex-row-reverse' : 'bottom-0 -mb-[7.5px]')
-        }
-        style={vertical ? { top: `calc(${at * 100}% - 7.5px)` } : { left: `calc(${at * 100}% - 7.5px)` }}
-      >
-        <span
-          className={'block h-[9px] w-[9px] rotate-45 rounded-[1px] shadow-[0_0_0_1.5px_var(--color-white)] transition-[filter] group-hover/ship:brightness-110 ' + SHIP_BG[status]}
-          aria-hidden
-        />
-        {releases.length > 1 && (
-          <span className="text-[9.5px] font-semibold leading-none tabular-nums text-ink-600" aria-hidden>{releases.length}</span>
-        )}
-      </button>
-      {rect && (
-        <ShipPopover
-          rect={rect}
-          releases={releases}
-          onEdit={id => { setRect(null); onEdit(id); }}
-          onClose={() => setRect(null)}
-        />
+    <ul aria-label="Releases" className={'mt-0.5 flex min-w-0 flex-col pb-1 ' + (center ? 'items-center' : 'items-start')}>
+      {shown.map(r => {
+        const d = describeRelease(r);
+        const status = r.forecast?.status;
+        return (
+          <li key={r.key} className="flex max-w-full min-w-0">
+            <button
+              type="button"
+              onClick={e => { e.stopPropagation(); onEdit(r.project.id); }}
+              title={`${d.name}\n${d.kind} ${d.date}${d.forecastText ? `\n${d.forecastText}` : ''}`}
+              className={
+                'flex min-w-0 items-center gap-1 text-[10.5px] font-normal normal-case leading-4 tracking-normal hover:underline focus-visible:underline focus-visible:outline-none ' +
+                (status ? RELEASE_TEXT[status] : 'text-ink-600')
+              }
+            >
+              <RocketIcon />
+              <span className="min-w-0 truncate">{d.name}</span>
+              {status === 'late' && d.finish && <span className="shrink-0 tabular-nums">→ {d.finish}</span>}
+            </button>
+          </li>
+        );
+      })}
+      {shown.length < releases.length && (
+        <li>
+          <button
+            type="button"
+            onClick={e => { e.stopPropagation(); setRect(rect ? null : e.currentTarget.getBoundingClientRect()); }}
+            aria-expanded={!!rect}
+            className="text-[10.5px] font-normal normal-case leading-4 tracking-normal text-ink-500 hover:text-ink-800 hover:underline"
+          >
+            +{releases.length - shown.length} more
+          </button>
+          {rect && (
+            <ReleasesPopover
+              rect={rect}
+              releases={releases}
+              onEdit={id => { setRect(null); onEdit(id); }}
+              onClose={() => setRect(null)}
+            />
+          )}
+        </li>
       )}
-    </>
+    </ul>
   );
 }
 
-function ShipPopover(props: {
+function ReleasesPopover(props: {
   rect: DOMRect;
   releases: ScheduledRelease[];
   onEdit: (id: ID) => void;
@@ -2726,7 +2732,7 @@ function ShipPopover(props: {
             title="Edit project"
             className="flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left transition hover:bg-ink-100"
           >
-            <span className={'mt-[5px] block h-2 w-2 shrink-0 rotate-45 rounded-[1px] ' + SHIP_BG[r.forecast?.status ?? 'none']} aria-hidden />
+            <span className={'mt-0.5 ' + (r.forecast ? RELEASE_TEXT[r.forecast.status] : 'text-ink-600')}><RocketIcon /></span>
             <span className="min-w-0 flex-1">
               <span className="block truncate text-[12.5px] font-medium text-ink-800">{d.name}</span>
               <span className="block text-[11px] text-ink-500">
@@ -3137,6 +3143,7 @@ function ChartTransposed(props: {
     <div
       className={
         'inline-block min-w-full overflow-clip rounded-2xl border border-ink-200 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04),0_8px_24px_-12px_rgba(15,23,42,0.08)] [--iteration-column-width:92px] [--week-column-width:80px] sm:[--iteration-column-width:140px] sm:[--week-column-width:96px]' +
+        (Object.values(props.releasesByWeek).some(r => r.length > 0) ? ' sm:[--week-column-width:150px]' : '') +
         (extending ? ' select-none' : '')
       }
     >
@@ -3398,10 +3405,8 @@ function ChartTransposed(props: {
                     title={`Expand iteration (${iterationDateRange(iter)})`}
                   >
                     <span className="opacity-80">{iterationDateRange(iter)}</span>
-                    <ShipMarker
+                    <WeekReleases
                       releases={weeks.flatMap(w => props.releasesByWeek[w.id] ?? [])}
-                      at={0.5}
-                      vertical
                       onEdit={props.onEditProject}
                     />
                   </td>
@@ -3447,18 +3452,13 @@ function ChartTransposed(props: {
                     style={{ left: ITER_W, width: WEEK_W, minWidth: WEEK_W }}
                     aria-current={w.id === props.currentWeekId ? 'date' : undefined}
                     className={
-                      'sticky z-10 border-b border-r border-ink-200 px-2 py-2 align-middle text-[11px] font-medium tabular-nums ' +
+                      'sticky z-10 border-b border-r border-ink-200 px-2 py-2 align-top text-[11px] font-medium tabular-nums ' +
                       weekBg
                     }
                   >
                     {w.id === props.currentWeekId && <TodayDot />}
                     {w.label}
-                    <ShipMarker
-                      releases={props.releasesByWeek[w.id]}
-                      at={props.releasesByWeek[w.id]?.length ? dayOffset(w.startDate, props.releasesByWeek[w.id][0].releaseDate) : 0}
-                      vertical
-                      onEdit={props.onEditProject}
-                    />
+                    <WeekReleases releases={props.releasesByWeek[w.id]} onEdit={props.onEditProject} />
                   </td>
                   {state.people.map((person, colIdx) => {
                     const cellAssigns = state.assignments.filter(
@@ -3486,7 +3486,6 @@ function ChartTransposed(props: {
                         isDri={isDri}
                         isIterEnd={false}
                         isCurrentWeek={isCurrent}
-                        shipLine={shipLineImage(props.releasesByWeek[w.id], w.startDate, true)}
                         isPastWeek={isPast}
                         highlightedProjectId={props.highlightedProjectId}
                         extendPreviewProject={extendPreviewProject}
@@ -3570,8 +3569,6 @@ function Cell(props: {
   isDri: boolean;
   isIterEnd: boolean;
   isCurrentWeek: boolean;
-  /** CSS background image for a release hairline. */
-  shipLine?: string;
   isPastWeek: boolean;
   rowAlt: boolean;
   highlightedProjectId: ID | null;
@@ -3632,7 +3629,6 @@ function Cell(props: {
       data-cell="1"
       data-pid={props.personId}
       data-wid={props.weekId}
-      style={props.shipLine && !hasUnavailable ? { backgroundImage: props.shipLine } : undefined}
       className={
         'group/cell relative min-h-[64px] min-w-[160px] cursor-pointer border-b-2 border-r border-ink-200 p-1.5 align-middle transition-colors ' +
         (props.vertical ? 'h-px ' : '') +
