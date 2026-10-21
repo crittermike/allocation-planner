@@ -60,14 +60,15 @@
   --pattern-fill-1: #1f2937;
   --pattern-fill-2: #111827;
   /* Soften brand/amber/emerald/rose/indigo tints so they don't glow in dark mode */
-  --color-brand-50: #2e1065;
+  --color-brand-50: #221f33;
   --color-brand-100: #4c1d95;
   --color-brand-200: #5b21b6;
   --color-brand-700: #c4b5fd;
-  --color-amber-50: #422006;
-  --color-amber-100: #78350f;
+  --color-amber-50: #29251d;
+  --color-amber-100: #3b3222;
   --color-amber-400: #d97706;
   --color-amber-500: #b45309;
+  --color-amber-700: #fcd34d;
   --color-amber-800: #fbbf24;
   --color-rose-50: #4c0519;
   --color-rose-200: #be123c;
@@ -75,8 +76,8 @@
   --color-emerald-50: #052e16;
   --color-emerald-200: #166534;
   --color-emerald-700: #86efac;
-  --color-indigo-50: #1e1b4b;
-  --color-indigo-100: #312e81;
+  --color-indigo-50: #1d2036;
+  --color-indigo-100: #2b2f52;
   --color-indigo-700: #a5b4fc;
 }
 

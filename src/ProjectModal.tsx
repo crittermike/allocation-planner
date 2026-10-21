@@ -4,6 +4,7 @@ import { milestoneLabel } from './milestones';
 import { LoadingScope, ScopePanel, scopeSourceFor, type FoundMilestone, type ScopeStatus } from './ScopePanel';
 import { hadScope, rememberScope, useScopeConfig } from './scopeApi';
 import type { Milestone, Person, Project } from './types';
+import { useModalFocus } from './useModalFocus';
 
 /** Chip-style EM values offered in the picker. Must stay in sync with the
  *  EM_CHIPS used in Capacity.tsx (the picker logic mirrors what's there). */
@@ -24,6 +25,14 @@ const inkFor = (bg: string) => INK_BY_BG[bg.toLowerCase()] ?? '#1e293b';
 
 const fmtWk = (n: number): string => `${Math.round(n * 10) / 10}`;
 
+const fmtReleaseDate = (iso: string): string => {
+  const [y, m, d] = iso.split('-').map(Number);
+  const date = new Date(y, m - 1, d);
+  if (Number.isNaN(date.getTime())) return iso;
+  const sameYear = y === new Date().getFullYear();
+  return date.toLocaleDateString('en-US', sameYear ? { month: 'short', day: 'numeric' } : { month: 'short', day: 'numeric', year: 'numeric' });
+};
+
 export function ReleaseDatePicker({ value, name, onChange, title = "The date you've communicated this project will ship", compact }: {
   value: string | undefined;
   /** Fill a narrow fixed-width parent instead of keeping the default minimum width. */
@@ -33,28 +42,53 @@ export function ReleaseDatePicker({ value, name, onChange, title = "The date you
   onChange: (date: string | undefined) => void;
   title?: string;
 }) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const openPicker = () => {
+    const input = inputRef.current;
+    if (!input) return;
+    try {
+      input.showPicker();
+    } catch {
+      input.focus();
+      input.click();
+    }
+  };
   return (
-    <div className={(compact ? 'w-full ' : 'w-full min-w-[174px] max-w-[220px] ') + 'flex h-8 items-center rounded-md border border-ink-200 bg-white transition-colors hover:border-ink-300 focus-within:border-brand-400 focus-within:ring-2 focus-within:ring-brand-200'}>
+    <div className={(compact ? 'w-full ' : 'w-full min-w-[120px] max-w-[160px] ') + 'relative flex h-8 items-center rounded-md border border-ink-200 bg-white transition-colors hover:border-ink-300 focus-within:border-brand-400 focus-within:ring-2 focus-within:ring-brand-200'}>
       <input
+        ref={inputRef}
         type="date"
         min="0001-01-01"
         max="9999-12-31"
         value={value ?? ''}
-        aria-label={`Release date for ${name}`}
-        title={title}
-        onChange={e => {
-          if (!e.currentTarget.reportValidity()) return;
-          onChange(e.currentTarget.value || undefined);
-        }}
-        className="h-full min-w-0 flex-1 bg-transparent px-2 text-[12px] tabular-nums text-ink-700 outline-none"
+        tabIndex={-1}
+        aria-hidden
+        onChange={e => onChange(e.currentTarget.value || undefined)}
+        className="pointer-events-none absolute inset-0 h-full w-full opacity-0"
       />
+      <button
+        type="button"
+        onClick={openPicker}
+        title={title}
+        aria-label={`Release date for ${name}: ${value ? fmtReleaseDate(value) : 'none'}`}
+        className="relative flex h-full min-w-0 flex-1 items-center bg-transparent px-2 text-left text-[12px] tabular-nums text-ink-700 outline-none"
+      >
+        {value ? (
+          <span className="truncate">{fmtReleaseDate(value)}</span>
+        ) : (
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" className="text-ink-300" aria-hidden>
+            <rect x="2" y="3" width="12" height="11" rx="1.5" />
+            <path d="M2 6.5h12M5.5 1.5v3M10.5 1.5v3" strokeLinecap="round" />
+          </svg>
+        )}
+      </button>
       {value && (
         <button
           type="button"
           onClick={() => onChange(undefined)}
           title="Clear release date"
           aria-label={`Clear release date for ${name}`}
-          className="mr-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-ink-500 transition-colors hover:bg-ink-100 hover:text-ink-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-400"
+          className="relative mr-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-ink-500 transition-colors hover:bg-ink-100 hover:text-ink-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-400"
         >
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden>
             <path d="m3 3 6 6m0-6-6 6" />
@@ -125,11 +159,9 @@ export function ColorPopover(props: {
 function EmPicker({
   value,
   onChange,
-  weeksPerEM,
 }: {
   value: number | undefined;
   onChange: (n: number | undefined) => void;
-  weeksPerEM: number;
 }) {
   const isCustom = value != null && !EM_CHIPS.includes(value);
   const [customStr, setCustomStr] = useState<string>(() =>
@@ -201,11 +233,6 @@ function EmPicker({
           </button>
         )}
       </div>
-      {value != null && weeksPerEM > 0 && (
-        <div className="text-[11px] text-ink-500">
-          ≈ <span className="tabular-nums">{fmtWk(value * weeksPerEM)}</span> person-weeks
-        </div>
-      )}
     </div>
   );
 }
@@ -262,7 +289,7 @@ function MilestonesSection(props: {
                   aria-label="Milestone name"
                   className={(m.goneFromGitHub ? 'line-through decoration-amber-500 !border-amber-300 !bg-amber-50 ' : '') + (m.github && !m.goneFromGitHub ? 'bg-ink-50 ' : '') + "h-8 min-w-0 flex-1 rounded-md border border-ink-200 bg-white px-2.5 text-[12.5px] text-ink-800 outline-none transition hover:border-ink-300 focus:border-brand-400 focus:ring-2 focus:ring-brand-200"}
                 />
-                <div className="w-[148px] shrink-0">
+                <div className="w-[124px] shrink-0">
                   <ReleaseDatePicker
                     compact
                     value={m.releaseDate}
@@ -352,6 +379,8 @@ export function ProjectEditModal(props: {
   const swatchRef = useRef<HTMLButtonElement>(null);
   const [colorOpen, setColorOpen] = useState(false);
   const [colorRect, setColorRect] = useState<DOMRect | null>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useModalFocus(dialogRef);
   const scopeConfig = useScopeConfig();
   const [scope, setScope] = useState<{ url: string; status: ScopeStatus } | null>(null);
   const onScopeStatus = useCallback((status: ScopeStatus, url: string) => {
@@ -413,8 +442,13 @@ export function ProjectEditModal(props: {
       onMouseDown={e => { if (e.target === e.currentTarget) props.onClose(); }}
     >
       <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={project.name || 'Project'}
+        tabIndex={-1}
         className={
-          'anim-pop-in w-full rounded-2xl border border-ink-200 bg-white shadow-2xl ' +
+          'anim-pop-in w-full outline-none rounded-2xl border border-ink-200 bg-white shadow-2xl ' +
           (wide ? 'max-w-[1200px] lg:grid lg:grid-cols-[512px_minmax(0,1fr)]' : 'max-w-lg')
         }
       >
@@ -427,6 +461,7 @@ export function ProjectEditModal(props: {
             type="button"
             onClick={props.onClose}
             title="Close"
+            aria-label="Close"
             className="inline-flex h-7 w-7 items-center justify-center rounded-md text-ink-500 hover:bg-ink-100 hover:text-ink-800"
           >
             ×
@@ -474,7 +509,6 @@ export function ProjectEditModal(props: {
           <div className="flex flex-col gap-1">
             <div className="flex items-baseline gap-2">
               <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-500">Estimated EM</span>
-              <span className="text-[10px] text-ink-400">— effort in engineering-months</span>
               <span className="flex-1" />
               <div className="flex items-baseline gap-1">
                 <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-500">Planned</span>
@@ -489,7 +523,6 @@ export function ProjectEditModal(props: {
             <EmPicker
               value={project.estimateEM}
               onChange={n => props.onUpdate({ estimateEM: n })}
-              weeksPerEM={weeksPerEM}
             />
           </div>
 
@@ -525,7 +558,7 @@ export function ProjectEditModal(props: {
           />
 
           <label className="flex flex-col gap-1">
-            <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-500">URL (e.g. tracking issue)</span>
+            <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-500">URL</span>
             <div className="flex items-center gap-1.5">
               <input
                 type="url"
@@ -541,6 +574,7 @@ export function ProjectEditModal(props: {
                   target="_blank"
                   rel="noopener noreferrer"
                   title={`Open ${project.url}`}
+                  aria-label="Open project URL"
                   className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-ink-200 bg-white text-ink-500 transition hover:bg-brand-50 hover:text-brand-600"
                 >
                   ↗
@@ -582,8 +616,8 @@ export function ProjectEditModal(props: {
             />
           </div>
         )}
-        <div className="flex items-center justify-between gap-2 border-t border-ink-100 bg-ink-50/40 px-5 py-3 lg:col-span-2">
-          {!props.isNew ? (
+        {!props.isNew && (
+          <div className="sticky -bottom-12 flex items-center rounded-b-2xl border-t border-ink-100 bg-white px-5 py-2.5 lg:col-span-2">
             <button
               type="button"
               onClick={() => {
@@ -596,17 +630,8 @@ export function ProjectEditModal(props: {
             >
               Delete project
             </button>
-          ) : (
-            <span />
-          )}
-          <button
-            type="button"
-            onClick={props.onClose}
-            className="inline-flex h-8 items-center gap-1 rounded-md bg-brand-600 px-4 text-[12.5px] font-semibold text-[#fff] shadow-sm transition hover:bg-brand-700 active:scale-[0.98]"
-          >
-            Done
-          </button>
-        </div>
+          </div>
+        )}
       </div>
     </div>
   );

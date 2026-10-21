@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { fmtNum, WEEKS_PER_EM, type CapacityInfo } from './capacityShared';
 import { ProjectEditModal, ReleaseDatePicker } from './ProjectModal';
 import { milestoneLabel } from './milestones';
+import { useModalFocus } from './useModalFocus';
 import type { Buffer, Person, PlanState, Project, Quarter } from './types';
 
 type ID = string;
@@ -404,6 +405,9 @@ export function QuarterModal({
     return () => window.removeEventListener('keydown', onKey);
   }, [open, onClose]);
 
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useModalFocus(dialogRef, open);
+
   if (!open) return null;
 
   const { quarter, minusFR, bufferPctSum, remainingPct, capacityEM, hasConfiguredQuarter } = info;
@@ -414,12 +418,16 @@ export function QuarterModal({
       onClick={onClose}
     >
       <div
-        className="w-full max-w-3xl rounded-2xl bg-white shadow-xl"
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="quarter-modal-title"
+        tabIndex={-1}
+        className="w-full max-w-3xl rounded-2xl bg-white shadow-xl outline-none"
         onClick={e => e.stopPropagation()}
       >
         <div className="flex items-center gap-3 border-b border-ink-100 px-5 py-3.5">
-          <h2 className="text-[15px] font-semibold tracking-tight text-ink-900">Quarter</h2>
-          <span className="text-[12px] text-ink-500">— team size, length, and buffers</span>
+          <h2 id="quarter-modal-title" className="text-[15px] font-semibold tracking-tight text-ink-900">Quarter</h2>
           {!hasConfiguredQuarter && (
             <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10.5px] font-semibold uppercase tracking-[0.06em] text-amber-700">
               Defaults
@@ -444,7 +452,6 @@ export function QuarterModal({
               onChange={n => updateQuarter({ engineers: n })}
               step={0.25}
               min={0}
-              hint="Effective team size (can be fractional, e.g. 5.5)"
             />
             <NumberField
               label="Weeks in quarter"
@@ -495,7 +502,6 @@ export function QuarterModal({
           <div className="mt-5">
             <div className="mb-2 flex items-center gap-2">
               <h3 className="text-[12px] font-semibold uppercase tracking-[0.08em] text-ink-600">Buffers</h3>
-              <span className="text-[11px] text-ink-400">— percentages subtracted from capacity</span>
               <span className="flex-1" />
               {quarter.buffers.length === 0 && (
                 <button

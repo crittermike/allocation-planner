@@ -35,6 +35,7 @@ Run `npm run build` before claiming code changes are complete — it both typech
 - `src/scopeDemo.ts`: one fictional epic (`acme-demo/invoice-exports` #700, milestones #701–#706) with a scenario switcher, for UI work without a token. Dev builds only (`import.meta.env.DEV`); tree-shaken out of production. Never mix demo data with real GitHub observations.
 - `src/usePlan.ts`: HTTP/WS plan loading, optimistic local updates, debounced syncing (`SEND_DEBOUNCE_MS = 120`), reconnect behavior, visit tracking, password unlock/change, and the `migrateState` shim that upgrades older saved plans on read.
 - `src/milestones.ts`: pure helpers for project milestones — slot uniqueness (`sameSlot`), retargeting and removing milestones without orphaning assignments, migration sanitizers, URL-deduped import, and `releasesByWeek` (project and milestone ship dates per chart week, calendar-day arithmetic).
+- `src/useModalFocus.ts`: focus trap and focus return for modals (`role="dialog"`, `aria-modal`). Use it for new modals.
 - `src/types.ts`: shared plan data shapes (`PlanState`, `Project`, `Quarter`, `Buffer`, etc.).
 - `src/styles.css`: small custom CSS layered on top of Tailwind v4.
 
