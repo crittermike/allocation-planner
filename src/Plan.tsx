@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { navigate } from './router';
 import { usePlan, type ConnState, type PasswordError } from './usePlan';
 import {
@@ -29,7 +30,7 @@ import type { TargetStatus } from './scope';
 import { UndoToast } from './Toast';
 import { canUndoToast, type UndoToast as UndoToastState } from './undoToast';
 import { layoutRuns, type PersonLanes, type RunLayout, type RunSlot } from './runs';
-import { currentWeekId as findCurrentWeekId } from './weeks';
+import { currentWeekId as findCurrentWeekId, dayOffset } from './weeks';
 
 type ID = string;
 
@@ -2039,7 +2040,6 @@ function Chart(props: {
     (count, row) => count + (row.isCollapsed ? 1 : row.weeks.length),
     0,
   );
-  const hasReleases = Object.values(props.releasesByWeek).some(releases => releases.length > 0);
   const runLayout = useRunLayout(state.assignments, iterationRows, projectsById);
 
   /* ------ Click-drag-to-extend ------
@@ -2258,61 +2258,45 @@ function Chart(props: {
                     title={`Expand iteration (${iterationDateRange(iter)})`}
                   >
                     <span className="opacity-80">{iterationDateRange(iter)}</span>
+                    <ShipMarker
+                      releases={weeks.flatMap(w => props.releasesByWeek[w.id] ?? [])}
+                      at={0.5}
+                      vertical={false}
+                      onEdit={props.onEditProject}
+                    />
                   </th>
                 );
               }
               return weeks.map((w, weekIdx) => {
                 const isIterEnd = weekIdx === weeks.length - 1;
                 const isToday = w.id === props.currentWeekId;
+                const releases = props.releasesByWeek[w.id];
                 return (
                   <th
                     key={w.id}
                     aria-current={isToday ? 'date' : undefined}
-                    title={isToday ? 'This week' : undefined}
                     className={
-                      'sticky top-9 z-20 h-8 min-w-[160px] border-b px-2 text-center text-[11px] tabular-nums ' +
-                      (isToday
-                        ? 'border-amber-300 bg-amber-100 font-semibold text-amber-800 shadow-[inset_0_-2px_0_var(--color-amber-500)]'
-                        : 'font-medium ' + weekToneClass) +
+                      'sticky top-9 z-20 h-8 min-w-[160px] border-b px-2 text-center text-[11px] font-medium tabular-nums ' +
+                      weekToneClass +
                       ' border-r ' +
                       (isIterEnd
                         ? (isCurrent ? 'border-r-2 border-r-amber-400/70' : 'border-r-2 border-r-ink-300')
                         : (isCurrent ? 'border-r-amber-200' : 'border-r-ink-200'))
                     }
                   >
+                    {isToday && <TodayDot />}
                     {w.label}
+                    <ShipMarker
+                      releases={releases}
+                      at={releases?.length ? dayOffset(w.startDate, releases[0].releaseDate) : 0}
+                      vertical={false}
+                      onEdit={props.onEditProject}
+                    />
                   </th>
                 );
               });
             })}
           </tr>
-          {hasReleases && (
-            <tr>
-              <th
-                scope="row"
-                className="sticky left-0 z-30 w-[128px] min-w-[128px] border-b border-r-2 border-ink-200 border-r-ink-300 bg-ink-50 pl-5 pr-2 py-1 text-left align-middle text-[10.5px] font-semibold uppercase tracking-[0.08em] text-ink-500 sm:w-[200px] sm:min-w-[200px]"
-              >
-                Releases
-              </th>
-              {iterationRows.flatMap(({ iter, tone, isCollapsed, weeks }) => {
-                const cells = isCollapsed
-                  ? [{ id: iter.id, releases: weeks.flatMap(w => props.releasesByWeek[w.id] ?? []) }]
-                  : weeks.map(w => ({ id: w.id, releases: props.releasesByWeek[w.id] ?? [] }));
-                return cells.map((cell, index) => (
-                  <th
-                    key={cell.id}
-                    className={
-                      'max-w-0 border-b border-r border-ink-200 px-1.5 py-1 align-top font-normal ' +
-                      (tone === 'current' ? 'bg-amber-50' : 'bg-ink-50') +
-                      (index === cells.length - 1 ? ' border-r-2 border-r-ink-300' : '')
-                    }
-                  >
-                    <WeekReleases releases={cell.releases} onEdit={props.onEditProject} />
-                  </th>
-                ));
-              })}
-            </tr>
-          )}
         </thead>
         <tbody>
           {state.people.map((person, rowIdx) => (
@@ -2401,7 +2385,7 @@ function Chart(props: {
                       isDri={isDri}
                       isIterEnd={weekIdx === weeks.length - 1}
                       isCurrentWeek={tone === 'current'}
-                      isToday={w.id === props.currentWeekId}
+                      shipLine={shipLineImage(props.releasesByWeek[w.id], w.startDate, false)}
                       isPastWeek={tone === 'past'}
                       highlightedProjectId={props.highlightedProjectId}
                       extendPreviewProject={extendPreviewProject}
@@ -2602,56 +2586,158 @@ const FORECAST_DOT: Record<TargetStatus, string> = {
   late: 'bg-rose-600',
 };
 
-/** Compact one-line release markers that sit with the week labels. */
-function WeekReleases({ releases, onEdit }: {
-  releases: ScheduledRelease[];
+function TodayDot() {
+  return <span className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-amber-500 align-middle" title="This week" aria-hidden />;
+}
+
+type ShipStatus = TargetStatus | 'none';
+const SHIP_ORDER: ShipStatus[] = ['late', 'at-risk', 'on-track', 'none'];
+const SHIP_BG: Record<ShipStatus, string> = { ...FORECAST_DOT, none: 'bg-ink-500' };
+const SHIP_COLOR: Record<ShipStatus, string> = {
+  late: 'var(--color-rose-600)',
+  'at-risk': 'var(--color-amber-500)',
+  'on-track': 'var(--color-emerald-500)',
+  none: 'var(--color-ink-400)',
+};
+
+function shipStatus(releases: ScheduledRelease[]): ShipStatus {
+  const statuses = releases.map(r => r.forecast?.status ?? 'none');
+  return SHIP_ORDER.find(s => statuses.includes(s)) ?? 'none';
+}
+
+/** A hairline across a week's cells at its first ship date. */
+function shipLineImage(releases: ScheduledRelease[] | undefined, weekStart: string, vertical: boolean): string | undefined {
+  if (!releases?.length) return undefined;
+  const at = dayOffset(weekStart, releases[0].releaseDate) * 100;
+  const color = `color-mix(in srgb, ${SHIP_COLOR[shipStatus(releases)]} 45%, transparent)`;
+  return `linear-gradient(to ${vertical ? 'bottom' : 'right'}, transparent calc(${at}% - 0.5px), ${color} calc(${at}% - 0.5px), ${color} calc(${at}% + 0.5px), transparent calc(${at}% + 0.5px))`;
+}
+
+function describeRelease({ project, milestone, releaseDate, forecast }: ScheduledRelease) {
+  const projectName = project.name || 'Untitled project';
+  const name = milestone ? `${projectName} · ${milestoneLabel(milestone)}` : projectName;
+  const day = (iso: string) => parseISODate(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const finish = forecast?.finishWeek
+    ? `${day(forecast.finishWeek)}${forecast.finishWeekEnd ? `–${day(forecast.finishWeekEnd).replace(/^[A-Za-z]+ /, '')}` : ''}`
+    : null;
+  const forecastText = forecast
+    ? `${FORECAST_LABEL[forecast.status]}${finish
+      ? `, forecast to finish the week of ${finish}`
+      : forecast.status === 'late' && releaseDate >= toISODate(startOfToday()) ? ', no finish in sight at the current pace' : ''}`
+    : '';
+  return {
+    name,
+    date: parseISODate(releaseDate).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }),
+    kind: milestone ? 'Milestone ships' : 'Release',
+    forecastText,
+  };
+}
+
+/** One marker per week on the header edge, at the first ship date. Its color is
+ *  the worst scope forecast in the week; click to list the releases. */
+function ShipMarker({ releases, at, vertical, onEdit }: {
+  releases: ScheduledRelease[] | undefined;
+  /** Position along the week, 0–1. */
+  at: number;
+  vertical: boolean;
   onEdit: (id: ID) => void;
 }) {
-  if (releases.length === 0) return null;
+  const [rect, setRect] = useState<DOMRect | null>(null);
+  if (!releases?.length) return null;
+  const status = shipStatus(releases);
+  const details = releases.map(describeRelease);
+  const summary = details
+    .map(d => `${d.name}\n${d.kind} ${d.date}${d.forecastText ? ` · ${d.forecastText}` : ''}`)
+    .join('\n\n');
   return (
-    <ul aria-label="Scheduled releases" className="flex flex-col gap-0.5">
-      {releases.map(({ key, project, milestone, releaseDate, forecast }) => {
-        const date = parseISODate(releaseDate);
-        const fullDate = date.toLocaleDateString('en-US', { dateStyle: 'full' });
-        const projectName = project.name || 'Untitled project';
-        const name = milestone ? `${projectName} · ${milestoneLabel(milestone)}` : projectName;
-        const day = (iso: string) => parseISODate(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-        const finish = forecast?.finishWeek
-          ? `${day(forecast.finishWeek)}${forecast.finishWeekEnd ? `–${day(forecast.finishWeekEnd).replace(/^[A-Za-z]+ /, '')}` : ''}`
-          : null;
-        const forecastText = forecast
-          ? `${FORECAST_LABEL[forecast.status]}${finish
-            ? `, forecast to finish the week of ${finish}`
-            : forecast.status === 'late' && releaseDate >= toISODate(startOfToday()) ? ', no finish in sight at the current pace' : ''}`
-          : '';
+    <>
+      <button
+        type="button"
+        onClick={e => { e.stopPropagation(); setRect(rect ? null : e.currentTarget.getBoundingClientRect()); }}
+        title={summary}
+        aria-label={`${releases.length} ${releases.length === 1 ? 'release' : 'releases'}: ${summary.replace(/\n+/g, '; ')}`}
+        aria-expanded={!!rect}
+        className={
+          'group/ship absolute z-10 flex items-center gap-0.5 rounded-sm p-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-400 ' +
+          (vertical ? 'right-0 -mr-[7.5px] flex-row-reverse' : 'bottom-0 -mb-[7.5px]')
+        }
+        style={vertical ? { top: `calc(${at * 100}% - 7.5px)` } : { left: `calc(${at * 100}% - 7.5px)` }}
+      >
+        <span
+          className={'block h-[9px] w-[9px] rotate-45 rounded-[1px] shadow-[0_0_0_1.5px_var(--color-white)] transition-[filter] group-hover/ship:brightness-110 ' + SHIP_BG[status]}
+          aria-hidden
+        />
+        {releases.length > 1 && (
+          <span className="text-[9.5px] font-semibold leading-none tabular-nums text-ink-600" aria-hidden>{releases.length}</span>
+        )}
+      </button>
+      {rect && (
+        <ShipPopover
+          rect={rect}
+          releases={releases}
+          onEdit={id => { setRect(null); onEdit(id); }}
+          onClose={() => setRect(null)}
+        />
+      )}
+    </>
+  );
+}
+
+function ShipPopover(props: {
+  rect: DOMRect;
+  releases: ScheduledRelease[];
+  onEdit: (id: ID) => void;
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const { onClose } = props;
+  useEffect(() => {
+    const onDoc = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [onClose]);
+  const w = 280;
+  let left = props.rect.left - 8;
+  if (left + w > window.innerWidth) left = window.innerWidth - w - 8;
+  if (left < 8) left = 8;
+  return createPortal(
+    <div
+      ref={ref}
+      role="dialog"
+      aria-label="Releases"
+      onClick={e => e.stopPropagation()}
+      className="anim-pop-in fixed z-50 flex flex-col gap-0.5 rounded-xl border border-ink-200 bg-white p-1.5 shadow-2xl"
+      style={{ top: props.rect.bottom + 6, left, width: w }}
+    >
+      {props.releases.map(r => {
+        const d = describeRelease(r);
         return (
-          <li key={key} className="min-w-0">
-            <button
-              type="button"
-              onClick={e => { e.stopPropagation(); onEdit(project.id); }}
-              title={`${name}\n${milestone ? 'Milestone ship date' : 'Communicated release'}: ${fullDate}${forecast ? `\nScope: ${forecastText}` : ''}\nClick to edit project`}
-              aria-label={`${name} ${milestone ? 'milestone ships' : 'releases'} ${fullDate}${forecast ? `; ${forecastText}` : ''}; edit project`}
-              className="chip-tint flex w-full min-w-0 items-center gap-1 rounded border px-1.5 py-px text-left text-[10.5px] font-medium normal-case leading-4 tracking-normal transition-[filter] hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-400"
-              style={{
-                ['--cc' as string]: project.color,
-                ['--cc-dark' as string]: darkBgFor(project.color),
-              }}
-            >
-              <svg width="10" height="11" viewBox="0 0 14 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" className="shrink-0" aria-hidden>
-                <path d="M7 1.5C4.5 3.5 4 6 4 10.5h6C10 6 9.5 3.5 7 1.5Z" />
-                <path d="m4 7-2.5 3v3L4 11m6-4 2.5 3v3L10 11M5.5 13 7 15l1.5-2" />
-              </svg>
-              <span className="min-w-0 flex-1 truncate">{name}</span>
-              {forecast && (forecast.status === 'late' && finish ? (
-                <span className="shrink-0 rounded-sm bg-rose-600 px-1 text-[9.5px] font-semibold tabular-nums text-[#fff]" aria-hidden>→ {finish}</span>
-              ) : (
-                <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${FORECAST_DOT[forecast.status]}`} aria-hidden />
-              ))}
-            </button>
-          </li>
+          <button
+            key={r.key}
+            type="button"
+            onClick={() => props.onEdit(r.project.id)}
+            title="Edit project"
+            className="flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left transition hover:bg-ink-100"
+          >
+            <span className={'mt-[5px] block h-2 w-2 shrink-0 rotate-45 rounded-[1px] ' + SHIP_BG[r.forecast?.status ?? 'none']} aria-hidden />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-[12.5px] font-medium text-ink-800">{d.name}</span>
+              <span className="block text-[11px] text-ink-500">
+                {d.date}{d.forecastText ? ` · ${d.forecastText}` : ''}
+              </span>
+            </span>
+          </button>
         );
       })}
-    </ul>
+    </div>,
+    document.body,
   );
 }
 
@@ -2981,7 +3067,6 @@ function ChartTransposed(props: {
   onTextBlur: () => void;
 }) {
   const { state, allWeeks, projectsById } = props;
-  const hasReleases = Object.values(props.releasesByWeek).some(releases => releases.length > 0);
   const [picker, setPicker] = useState<{ personId: ID; weekId: string; rect: DOMRect } | null>(null);
   const iterationRows = useMemo(
     () => state.iterations.map((iter, idx) => ({
@@ -3052,7 +3137,6 @@ function ChartTransposed(props: {
     <div
       className={
         'inline-block min-w-full overflow-clip rounded-2xl border border-ink-200 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04),0_8px_24px_-12px_rgba(15,23,42,0.08)] [--iteration-column-width:92px] [--week-column-width:80px] sm:[--iteration-column-width:140px] sm:[--week-column-width:96px]' +
-        (hasReleases ? ' [--week-column-width:120px] sm:[--week-column-width:150px]' : '') +
         (extending ? ' select-none' : '')
       }
     >
@@ -3314,14 +3398,12 @@ function ChartTransposed(props: {
                     title={`Expand iteration (${iterationDateRange(iter)})`}
                   >
                     <span className="opacity-80">{iterationDateRange(iter)}</span>
-                    {hasReleases && (
-                      <div className="mt-1">
-                        <WeekReleases
-                          releases={weeks.flatMap(w => props.releasesByWeek[w.id] ?? [])}
-                          onEdit={props.onEditProject}
-                        />
-                      </div>
-                    )}
+                    <ShipMarker
+                      releases={weeks.flatMap(w => props.releasesByWeek[w.id] ?? [])}
+                      at={0.5}
+                      vertical
+                      onEdit={props.onEditProject}
+                    />
                   </td>
                   {state.people.map((person, colIdx) => (
                     <CollapsedIterationCell
@@ -3364,20 +3446,19 @@ function ChartTransposed(props: {
                   <td
                     style={{ left: ITER_W, width: WEEK_W, minWidth: WEEK_W }}
                     aria-current={w.id === props.currentWeekId ? 'date' : undefined}
-                    title={w.id === props.currentWeekId ? 'This week' : undefined}
                     className={
-                      'sticky z-10 border-b border-r border-ink-200 px-2 py-2 align-middle text-[11px] tabular-nums ' +
-                      (w.id === props.currentWeekId
-                        ? 'bg-amber-100 font-semibold text-amber-800 shadow-[inset_3px_0_0_var(--color-amber-500)]'
-                        : 'font-medium ' + weekBg)
+                      'sticky z-10 border-b border-r border-ink-200 px-2 py-2 align-middle text-[11px] font-medium tabular-nums ' +
+                      weekBg
                     }
                   >
+                    {w.id === props.currentWeekId && <TodayDot />}
                     {w.label}
-                    {hasReleases && (
-                      <div className="mt-1">
-                        <WeekReleases releases={props.releasesByWeek[w.id] ?? []} onEdit={props.onEditProject} />
-                      </div>
-                    )}
+                    <ShipMarker
+                      releases={props.releasesByWeek[w.id]}
+                      at={props.releasesByWeek[w.id]?.length ? dayOffset(w.startDate, props.releasesByWeek[w.id][0].releaseDate) : 0}
+                      vertical
+                      onEdit={props.onEditProject}
+                    />
                   </td>
                   {state.people.map((person, colIdx) => {
                     const cellAssigns = state.assignments.filter(
@@ -3405,7 +3486,7 @@ function ChartTransposed(props: {
                         isDri={isDri}
                         isIterEnd={false}
                         isCurrentWeek={isCurrent}
-                        isToday={w.id === props.currentWeekId}
+                        shipLine={shipLineImage(props.releasesByWeek[w.id], w.startDate, true)}
                         isPastWeek={isPast}
                         highlightedProjectId={props.highlightedProjectId}
                         extendPreviewProject={extendPreviewProject}
@@ -3489,7 +3570,8 @@ function Cell(props: {
   isDri: boolean;
   isIterEnd: boolean;
   isCurrentWeek: boolean;
-  isToday?: boolean;
+  /** CSS background image for a release hairline. */
+  shipLine?: string;
   isPastWeek: boolean;
   rowAlt: boolean;
   highlightedProjectId: ID | null;
@@ -3533,8 +3615,6 @@ function Cell(props: {
 
   const baseBg = hasUnavailable
     ? 'pattern-stripe-soft'
-    : props.isToday
-    ? (props.rowAlt ? 'bg-amber-100/70 hover:bg-amber-100' : 'bg-amber-100/50 hover:bg-amber-100')
     : props.isCurrentWeek
     ? (props.rowAlt ? 'bg-amber-50/80 hover:bg-amber-50' : 'bg-amber-50/40 hover:bg-amber-50')
     : props.isPastWeek
@@ -3552,6 +3632,7 @@ function Cell(props: {
       data-cell="1"
       data-pid={props.personId}
       data-wid={props.weekId}
+      style={props.shipLine && !hasUnavailable ? { backgroundImage: props.shipLine } : undefined}
       className={
         'group/cell relative min-h-[64px] min-w-[160px] cursor-pointer border-b-2 border-r border-ink-200 p-1.5 align-middle transition-colors ' +
         (props.vertical ? 'h-px ' : '') +
