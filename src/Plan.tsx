@@ -24,6 +24,8 @@ import {
   type ScheduledRelease,
 } from './milestones';
 import type { Assignment, Milestone, Project } from './types';
+import { UndoToast } from './Toast';
+import { canUndoToast, type UndoToast as UndoToastState } from './undoToast';
 
 type ID = string;
 
@@ -549,6 +551,19 @@ function PlanView({
     setRedoLen(stack.length);
   }, [setState]);
 
+  // Destructive actions apply immediately; this toast offers to undo the latest one.
+  const [undoToast, setUndoToast] = useState<UndoToastState<State> | null>(null);
+  const undoToastIdRef = useRef(0);
+  const showUndoToast = (message: string) => {
+    const checkpoint = undoStackRef.current[undoStackRef.current.length - 1];
+    setUndoToast({ id: ++undoToastIdRef.current, message, checkpoint });
+  };
+  const dismissUndoToast = useCallback(() => setUndoToast(null), []);
+  const undoFromToast = () => {
+    if (canUndoToast(undoStackRef.current, undoToast)) undo();
+    setUndoToast(null);
+  };
+
   // For text fields: capture snapshot on focus, push to undo on blur if changed
   const textSnapshotRef = useRef<State | null>(null);
   const onTextFocus = useCallback(() => {
@@ -638,7 +653,9 @@ function PlanView({
     });
   };
   const removePerson = (id: ID) => {
+    const person = stateRef.current.people.find(p => p.id === id);
     pushUndo();
+    showUndoToast(`Removed ${person?.name ?? 'person'}`);
     setState(s => ({
       ...s,
       people: s.people.filter(p => p.id !== id),
@@ -663,7 +680,9 @@ function PlanView({
     return id;
   };
   const removeProject = (id: ID) => {
+    const project = stateRef.current.projects.find(p => p.id === id);
     pushUndo();
+    showUndoToast(`Deleted ${project?.name ?? 'project'}`);
     setState(s => ({
       ...s,
       projects: s.projects.filter(p => p.id !== id),
@@ -691,7 +710,9 @@ function PlanView({
     });
   }, [setState]);
   const removeMilestone = (projectId: ID, milestoneId: ID) => {
+    const milestone = milestoneOf(stateRef.current.projects.find(p => p.id === projectId), milestoneId);
     pushUndo();
+    showUndoToast(`Removed ${milestone ? milestoneLabel(milestone) : 'milestone'}`);
     setState(s => removeMilestoneFromState(s, projectId, milestoneId));
   };
   const setAssignmentMilestone = (assignmentId: ID, milestoneId: ID | undefined) => {
@@ -701,15 +722,8 @@ function PlanView({
   const descopeProject = (id: ID) => {
     const proj = state.projects.find(p => p.id === id);
     if (!proj) return;
-    const assignedCount = state.assignments.filter(a => a.projectId === id).length;
-    if (assignedCount > 0) {
-      const ok = confirm(
-        `"${proj.name}" has ${assignedCount} scheduled assignment${assignedCount === 1 ? '' : 's'}.\n\n` +
-        `Descope anyway? The assignments stay on the chart but the project is hidden from the picker and counted in "Descoped".`,
-      );
-      if (!ok) return;
-    }
     pushUndo();
+    showUndoToast(`Descoped ${proj.name}`);
     setState(s => ({
       ...s,
       projects: s.projects.map(p => (p.id === id ? { ...p, descoped: true } : p)),
@@ -835,6 +849,7 @@ function PlanView({
   };
   const removeIteration = (iterationId: ID) => {
     pushUndo();
+    showUndoToast('Removed iteration');
     setState(s => {
       const weekIds = new Set([`${iterationId}:0`, `${iterationId}:1`]);
       return {
@@ -923,10 +938,9 @@ function PlanView({
     setState(s => ({ ...s, assignments: s.assignments.filter(a => a.id !== id) }));
   };
   const clearAssignments = () => {
-    if (confirm('Clear all assignments?')) {
-      pushUndo();
-      setState(s => ({ ...s, assignments: [] }));
-    }
+    pushUndo();
+    showUndoToast('Cleared chart');
+    setState(s => ({ ...s, assignments: [] }));
   };
 
   /* Auto-scroll the chart so the current iteration is the first one visible.
@@ -1433,6 +1447,14 @@ function PlanView({
         hasPassword={hasPassword}
         onClose={() => setPasswordDialog(null)}
         changePassword={changePassword}
+      />
+    )}
+    {undoToast && canUndoToast(undoStackRef.current, undoToast) && (
+      <UndoToast
+        id={undoToast.id}
+        message={undoToast.message}
+        onUndo={undoFromToast}
+        onDismiss={dismissUndoToast}
       />
     )}
     </>
@@ -2104,7 +2126,7 @@ function Chart(props: {
                     </button>
                     <button
                       onClick={() => {
-                        if (confirm('Remove this iteration (both weeks)?')) props.removeIteration(iter.id);
+                        props.removeIteration(iter.id);
                       }}
                       title="Remove iteration"
                       aria-label="Remove iteration"
@@ -2219,7 +2241,7 @@ function Chart(props: {
                     title="Remove person"
                     className="opacity-0 group-hover/row:opacity-100 focus:opacity-100"
                     onClick={() => {
-                      if (confirm(`Remove ${person.name}?`)) props.removePerson(person.id);
+                      props.removePerson(person.id);
                     }}
                   >
                     ×
@@ -2993,7 +3015,7 @@ function ChartTransposed(props: {
                     title="Remove person"
                     className="opacity-0 group-hover/col:opacity-100 focus:opacity-100"
                     onClick={() => {
-                      if (confirm(`Remove ${person.name}?`)) props.removePerson(person.id);
+                      props.removePerson(person.id);
                     }}
                   >
                     ×
@@ -3095,7 +3117,7 @@ function ChartTransposed(props: {
                   </button>
                   <button
                     onClick={() => {
-                      if (confirm('Remove this iteration (both weeks)?')) props.removeIteration(iter.id);
+                      props.removeIteration(iter.id);
                     }}
                     title="Remove iteration"
                     aria-label="Remove iteration"
@@ -3165,7 +3187,7 @@ function ChartTransposed(props: {
                 </button>
                 <button
                   onClick={() => {
-                    if (confirm('Remove this iteration (both weeks)?')) props.removeIteration(iter.id);
+                    props.removeIteration(iter.id);
                   }}
                   title="Remove iteration"
                   aria-label="Remove iteration"
@@ -3834,10 +3856,8 @@ function ProjectsTable(props: {
             onStartEdit={() => props.onStartEdit(p.id)}
             onUpdate={patch => props.updateProject(p.id, patch)}
             onRemove={() => {
-              if (confirm(`Delete project "${p.name}"?`)) {
-                if (props.editingId === p.id) props.onStopEdit();
-                props.removeProject(p.id);
-              }
+              if (props.editingId === p.id) props.onStopEdit();
+              props.removeProject(p.id);
             }}
             compact={!!props.compact}
             isHighlighted={props.highlightedProjectId === p.id}

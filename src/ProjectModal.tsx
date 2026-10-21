@@ -320,10 +320,7 @@ function MilestonesSection(props: {
                 )}
                 <button
                   type="button"
-                  onClick={() => {
-                    if (weeks > 0 && !confirm(`Remove milestone "${label}"?\n\nIts ${weeks} assignment-week${weeks === 1 ? '' : 's'} stay on the chart as plain "${project.name}" work.`)) return;
-                    props.onRemove(m.id);
-                  }}
+                  onClick={() => props.onRemove(m.id)}
                   title="Remove milestone"
                   aria-label={`Remove milestone ${label}`}
                   className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-400 transition hover:bg-rose-50 hover:text-rose-600"
@@ -621,10 +618,8 @@ export function ProjectEditModal(props: {
             <button
               type="button"
               onClick={() => {
-                if (confirm(`Delete project "${project.name}"?`)) {
-                  props.onRemove();
-                  props.onClose();
-                }
+                props.onRemove();
+                props.onClose();
               }}
               className="inline-flex h-8 items-center gap-1 rounded-md border border-rose-200 bg-white px-3 text-[12.5px] text-rose-600 transition hover:bg-rose-50"
             >

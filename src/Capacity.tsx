@@ -737,11 +737,7 @@ export function PrioritizationTable({
             onUpdate={patch => updateProject(p.id, patch)}
             onEdit={() => onEdit(p.id)}
             onDescope={() => descopeInitiative(p.id)}
-            onDelete={() => {
-              if (confirm(`Permanently delete "${p.name}"? Descoping keeps it hidden but recoverable.`)) {
-                removeInitiative(p.id);
-              }
-            }}
+            onDelete={() => removeInitiative(p.id)}
             onDragStart={() => setDraggingId(p.id)}
             onDragOverRow={pos => {
               if (draggingId == null) return;
@@ -1080,11 +1076,7 @@ export function DescopedDrawer({
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  if (confirm(`Permanently delete "${p.name}"?`)) {
-                    removeInitiative(p.id);
-                  }
-                }}
+                onClick={() => removeInitiative(p.id)}
                 title="Delete permanently"
                 aria-label="Delete"
                 className="inline-flex h-6 w-6 items-center justify-center rounded text-ink-400 transition hover:bg-rose-50 hover:text-rose-600"
