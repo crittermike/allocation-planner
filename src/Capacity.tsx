@@ -93,6 +93,7 @@ function BarRow({
   hideDelta,
   highlightedProjectId,
   onHoverProject,
+  onClick,
   markerVariant = 'standalone',
 }: {
   label: string;
@@ -106,6 +107,7 @@ function BarRow({
   hideDelta?: boolean;
   highlightedProjectId?: ID | null;
   onHoverProject?: (id: ID | null) => void;
+  onClick?: () => void;
   markerVariant?: 'standalone' | 'top' | 'bottom';
 }) {
   const delta = capacity - total;
@@ -167,8 +169,9 @@ function BarRow({
         {label}
       </div>
       <div
-        className="relative h-9 flex-1 overflow-visible rounded-lg bg-ink-100"
+        className={'relative h-9 flex-1 overflow-visible rounded-lg bg-ink-100' + (onClick ? ' cursor-pointer' : '')}
         onMouseLeave={handleBarLeave}
+        onClick={onClick}
       >
         {segments.map(seg => {
           const isHovered = highlightedProjectId === seg.id;
@@ -229,8 +232,9 @@ function BarRow({
           >
             {markerVariant !== 'bottom' && (
               <div
-                className="absolute bottom-full mb-0.5 whitespace-nowrap text-[10px] font-semibold tabular-nums text-ink-700"
+                className={'absolute bottom-full mb-0.5 whitespace-nowrap text-[10px] font-semibold tabular-nums text-ink-700' + (onClick ? ' pointer-events-auto hover:underline' : '')}
                 style={capacityPct > 90 ? { right: 0 } : { left: '50%', transform: 'translateX(-50%)' }}
+                title={onClick ? 'Quarter setup' : undefined}
               >
                 {fmtNum(capacityEM, 1)} EM
               </div>
@@ -308,7 +312,6 @@ export function CapacityBars({
   highlightedProjectId?: ID | null;
   onHoverProject?: (id: ID | null) => void;
 }) {
-  void onConfigureQuarter; // quarter setup lives in the toolbar overflow menu
   const { capacityEM, demandEM, hasConfiguredQuarter } = info;
 
   const plannedEM = useMemo<Record<ID, number>>(() => {
@@ -354,6 +357,7 @@ export function CapacityBars({
         capacity={capacityEM}
         highlightedProjectId={highlightedProjectId}
         onHoverProject={onHoverProject}
+        onClick={onConfigureQuarter}
         markerVariant="top"
       />
       <BarRow
@@ -367,6 +371,7 @@ export function CapacityBars({
         capacity={capacityEM}
         highlightedProjectId={highlightedProjectId}
         onHoverProject={onHoverProject}
+        onClick={onConfigureQuarter}
         markerVariant="bottom"
       />
     </div>

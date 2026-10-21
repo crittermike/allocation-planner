@@ -1198,8 +1198,6 @@ function PlanView({
         <OverflowMenu
           items={[
             { sectionLabel: 'Add' },
-            { label: 'Iteration', icon: <IconPlus />, onClick: addIteration, title: 'Add a new iteration after the last one' },
-            { label: 'Person', icon: <IconUserPlus />, onClick: () => addPerson(), title: 'Add a new person' },
             { label: 'Past iteration', icon: <IconArrowLeft />, onClick: addPastIteration, title: 'Add an iteration before the first one' },
             { sectionLabel: 'Plan' },
             {
@@ -1244,6 +1242,7 @@ function PlanView({
               movePerson={movePerson}
               removePerson={removePerson}
               addPerson={addPerson}
+              addIteration={addIteration}
               removeIteration={removeIteration}
               setIterationStart={setIterationStart}
               setIterationGoal={setIterationGoal}
@@ -1272,6 +1271,7 @@ function PlanView({
               movePerson={movePerson}
               removePerson={removePerson}
               addPerson={addPerson}
+              addIteration={addIteration}
               removeIteration={removeIteration}
               setIterationStart={setIterationStart}
               setIterationGoal={setIterationGoal}
@@ -1542,16 +1542,9 @@ const iconSvg = (path: React.ReactNode) => (
     {path}
   </svg>
 );
-const IconPlus = () => iconSvg(<><path d="M8 3v10" /><path d="M3 8h10" /></>);
 const IconUndo = () => iconSvg(<><path d="M5.5 3.5L2.5 6.5l3 3" /><path d="M2.5 6.5h7a3.5 3.5 0 0 1 0 7H7" /></>);
 const IconRedo = () => iconSvg(<><path d="M10.5 3.5l3 3-3 3" /><path d="M13.5 6.5h-7a3.5 3.5 0 0 0 0 7H9" /></>);
 const IconArrowLeft = () => iconSvg(<><path d="M12.5 8H3.5" /><path d="M7 4l-3.5 4L7 12" /></>);
-const IconUserPlus = () => iconSvg(<>
-  <circle cx="6.5" cy="5.5" r="2.25" />
-  <path d="M2.5 13.5c0-2.21 1.79-4 4-4s4 1.79 4 4" />
-  <path d="M12.5 4v4" />
-  <path d="M10.5 6h4" />
-</>);
 const IconGear = () => iconSvg(<>
   <circle cx="8" cy="8" r="2.25" />
   <path d="M8 1.5v1.7M8 12.8v1.7M14.5 8h-1.7M3.2 8H1.5M12.6 3.4l-1.2 1.2M4.6 11.4l-1.2 1.2M12.6 12.6l-1.2-1.2M4.6 4.6L3.4 3.4" />
@@ -1934,6 +1927,7 @@ function Chart(props: {
   movePerson: (id: ID, dir: -1 | 1) => void;
   removePerson: (id: ID) => void;
   addPerson: (name?: string) => void;
+  addIteration: () => void;
   removeIteration: (id: ID) => void;
   setIterationStart: (id: ID, isoDate: string) => void;
   setIterationGoal: (id: ID, goal: string) => void;
@@ -2148,12 +2142,23 @@ function Chart(props: {
                 </th>
               );
             })}
+            <th rowSpan={2} className="sticky top-0 z-20 w-10 border-b border-ink-200 bg-ink-50 px-2 align-middle">
+              <button
+                type="button"
+                onClick={props.addIteration}
+                title="Add iteration"
+                aria-label="Add iteration"
+                className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-ink-200 bg-white text-[14px] font-semibold leading-none text-ink-600 shadow-sm transition hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700"
+              >
+                +
+              </button>
+            </th>
             {state.iterations.length === 0 && (
               <th
                 rowSpan={2}
                 className="sticky top-0 z-20 border-b border-ink-200 bg-ink-50 px-6 py-3 text-left text-[12px] font-normal text-ink-500"
               >
-                Click <span className="rounded bg-white px-1.5 py-0.5 font-medium text-ink-700 ring-1 ring-ink-200">+ Iteration</span> to add 2 weeks.
+                Click <span className="rounded bg-white px-1.5 py-0.5 font-medium text-ink-700 ring-1 ring-ink-200">+</span> to add 2 weeks.
               </th>
             )}
           </tr>
@@ -2878,6 +2883,7 @@ function ChartTransposed(props: {
   movePerson: (id: ID, dir: -1 | 1) => void;
   removePerson: (id: ID) => void;
   addPerson: (name?: string) => void;
+  addIteration: () => void;
   removeIteration: (id: ID) => void;
   setIterationStart: (id: ID, isoDate: string) => void;
   setIterationGoal: (id: ID, goal: string) => void;
@@ -3047,7 +3053,7 @@ function ChartTransposed(props: {
                 colSpan={4 + state.people.length}
                 className="px-6 py-10 text-center text-[13px] text-ink-500"
               >
-                Click <span className="rounded bg-white px-1.5 py-0.5 font-medium text-ink-700 ring-1 ring-ink-200">+ Iteration</span> to add 2 weeks.
+                Click <span className="rounded bg-white px-1.5 py-0.5 font-medium text-ink-700 ring-1 ring-ink-200">+</span> to add 2 weeks.
               </td>
             </tr>
           )}
@@ -3342,6 +3348,24 @@ function ChartTransposed(props: {
               );
             });
           })}
+          <tr>
+            <td
+              colSpan={2}
+              style={{ left: 0 }}
+              className="sticky z-10 border-r border-ink-200 bg-ink-50 px-2 py-1.5"
+            >
+              <button
+                type="button"
+                onClick={props.addIteration}
+                title="Add iteration"
+                aria-label="Add iteration"
+                className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-ink-200 bg-white text-[14px] font-semibold leading-none text-ink-600 shadow-sm transition hover:border-brand-300 hover:bg-brand-50 hover:text-brand-700"
+              >
+                +
+              </button>
+            </td>
+            <td colSpan={2 + state.people.length} />
+          </tr>
         </tbody>
       </table>
 
