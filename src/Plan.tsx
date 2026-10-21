@@ -931,6 +931,8 @@ function PlanView({
     () => readCollapsedIterationIds(slug),
   );
   const didAutoCollapse = useRef(false);
+  // Set while an auto-collapse is about to change the layout, so the initial scroll waits for it.
+  const autoCollapsePending = useRef(false);
 
   // On first load, auto-collapse past iterations if no stored preference exists
   useEffect(() => {
@@ -943,6 +945,7 @@ function PlanView({
       .filter(iter => iterationTone(iter, today) === 'past')
       .map(iter => iter.id);
     if (pastIds.length > 0) {
+      autoCollapsePending.current = true;
       setCollapsedIterationIds(prev => {
         const next = new Set(prev);
         for (const id of pastIds) next.add(id);
@@ -1063,20 +1066,26 @@ function PlanView({
   useEffect(() => {
     if (!currentIterationId) return;
     if (lastScrolledIterRef.current === currentIterationId) return;
+    if (autoCollapsePending.current) {
+      autoCollapsePending.current = false;
+      return;
+    }
     const scroller = chartScrollRef.current;
     if (!scroller) return;
     const target = scroller.querySelector<HTMLElement>(
       `[data-iter-id="${currentIterationId}"]`,
     );
     if (!target) return;
+    // Snap the current iteration's start flush against the sticky header/column.
+    const t = target.getBoundingClientRect();
     if (transposed) {
-      const stickyOffset = 36;
-      const top = target.offsetTop - stickyOffset - 8;
-      scroller.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+      const header = scroller.querySelector('thead')?.getBoundingClientRect();
+      if (!header) return;
+      scroller.scrollTo({ top: Math.max(0, scroller.scrollTop + t.top - header.bottom) });
     } else {
-      const stickyOffset = 200;
-      const left = target.offsetLeft - stickyOffset - 8;
-      scroller.scrollTo({ left: Math.max(0, left), behavior: 'smooth' });
+      const corner = scroller.querySelector('thead th')?.getBoundingClientRect();
+      if (!corner) return;
+      scroller.scrollTo({ left: Math.max(0, scroller.scrollLeft + t.left - corner.right) });
     }
     lastScrolledIterRef.current = currentIterationId;
   }, [collapsedIterationIds, currentIterationId, transposed]);
@@ -1162,8 +1171,8 @@ function PlanView({
         )}
         <Presence conn={conn} peers={peers} />
         <div className="mx-1 h-5 w-px bg-ink-200" aria-hidden />
-        <IconToolbarButton disabled={undoLen === 0} onClick={undo} title="Undo (⌘Z)" label="Undo">↩</IconToolbarButton>
-        <IconToolbarButton disabled={redoLen === 0} onClick={redo} title="Redo (⇧⌘Z)" label="Redo">↪</IconToolbarButton>
+        <IconToolbarButton disabled={undoLen === 0} onClick={undo} title="Undo (⌘Z)" label="Undo"><IconUndo /></IconToolbarButton>
+        <IconToolbarButton disabled={redoLen === 0} onClick={redo} title="Redo (⇧⌘Z)" label="Redo"><IconRedo /></IconToolbarButton>
         <OverflowMenu
           items={[
             { sectionLabel: 'Add' },
@@ -1504,6 +1513,8 @@ const iconSvg = (path: React.ReactNode) => (
   </svg>
 );
 const IconPlus = () => iconSvg(<><path d="M8 3v10" /><path d="M3 8h10" /></>);
+const IconUndo = () => iconSvg(<><path d="M5.5 3.5L2.5 6.5l3 3" /><path d="M2.5 6.5h7a3.5 3.5 0 0 1 0 7H7" /></>);
+const IconRedo = () => iconSvg(<><path d="M10.5 3.5l3 3-3 3" /><path d="M13.5 6.5h-7a3.5 3.5 0 0 0 0 7H9" /></>);
 const IconArrowLeft = () => iconSvg(<><path d="M12.5 8H3.5" /><path d="M7 4l-3.5 4L7 12" /></>);
 const IconUserPlus = () => iconSvg(<>
   <circle cx="6.5" cy="5.5" r="2.25" />
@@ -1865,7 +1876,7 @@ function IterationGoal(props: {
       title={props.goal ? 'Edit iteration goal' : 'Add a goal for this iteration'}
       className={
         'min-w-0 truncate rounded px-1.5 py-px text-left text-[10.5px] font-medium tracking-normal normal-case transition hover:bg-white/50 ' +
-        (props.goal ? 'opacity-90' : 'italic opacity-50 hover:opacity-80 ') +
+        (props.goal ? 'opacity-90 ' : 'italic ' + ITER_REVEAL + ' ') +
         className
       }
     >
@@ -1873,6 +1884,10 @@ function IterationGoal(props: {
     </button>
   );
 }
+
+/** Iteration header controls stay hidden until the header is hovered or focused. */
+const ITER_REVEAL =
+  'opacity-0 group-hover/iter:opacity-50 group-focus-within/iter:opacity-50 [@media(hover:none)]:opacity-50 hover:!opacity-100 focus-visible:!opacity-100 focus-within:!opacity-100';
 
 function Chart(props: {
   state: State;
@@ -2011,7 +2026,7 @@ function Chart(props: {
                   data-iter-id={iter.id}
                   colSpan={isCollapsed ? 1 : 2}
                   className={
-                    'sticky top-0 z-20 border-b-2 border-r-2 px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.08em] ' +
+                    'group/iter sticky top-0 z-20 border-b-2 border-r-2 px-2 py-1 text-[11px] font-semibold uppercase tracking-[0.08em] ' +
                     (isCurrent
                       ? 'border-amber-500 border-r-amber-400/70 bg-amber-100 text-amber-800'
                       : isPast
@@ -2052,7 +2067,7 @@ function Chart(props: {
                       </span>
                     )}
                     <label
-                      className="relative ml-0.5 inline-flex h-4 w-4 cursor-pointer items-center justify-center rounded text-current opacity-50 transition hover:bg-white/50 hover:opacity-100"
+                      className={'relative ml-0.5 inline-flex h-4 w-4 cursor-pointer items-center justify-center rounded text-current transition hover:bg-white/50 ' + ITER_REVEAL}
                       title={`Set start date (currently ${iter.startDate})`}
                     >
                       <svg width="11" height="11" viewBox="0 0 14 14" fill="none" aria-hidden>
@@ -2071,9 +2086,11 @@ function Chart(props: {
                       />
                     </label>
                     <button
+                      type="button"
                       onClick={() => props.duplicateIteration(iter.id)}
                       title="Duplicate this iteration (copies all assignments to a new iteration at the end)"
-                      className="inline-flex h-4 w-4 items-center justify-center rounded text-current opacity-50 transition hover:bg-white/50 hover:opacity-100"
+                      aria-label="Duplicate iteration"
+                      className={'inline-flex h-4 w-4 items-center justify-center rounded text-current transition hover:bg-white/50 ' + ITER_REVEAL}
                     >
                       <DuplicateIcon />
                     </button>
@@ -2082,7 +2099,8 @@ function Chart(props: {
                         if (confirm('Remove this iteration (both weeks)?')) props.removeIteration(iter.id);
                       }}
                       title="Remove iteration"
-                      className="ml-0.5 inline-flex h-4 w-4 items-center justify-center rounded text-current opacity-50 hover:bg-white/50 hover:opacity-100"
+                      aria-label="Remove iteration"
+                      className={'ml-0.5 inline-flex h-4 w-4 items-center justify-center rounded text-current transition hover:bg-white/50 ' + ITER_REVEAL}
                     >
                       ×
                     </button>
@@ -2650,11 +2668,11 @@ function WeekNoteTextarea(props: {
       title={props.title}
       style={{ minHeight: minH }}
       className={
-        'block w-full cursor-text break-words rounded-lg border border-transparent px-2.5 py-2 text-[13px] leading-relaxed transition hover:border-ink-200 hover:bg-white hover:shadow-sm ' +
+        'group/note block w-full cursor-text break-words rounded-lg border border-transparent px-2.5 py-2 text-[13px] leading-relaxed transition hover:border-ink-200 hover:bg-white hover:shadow-sm ' +
         (props.muted ? 'text-ink-500' : 'text-ink-700')
       }
     >
-      {hasValue ? <MarkdownText text={props.value} /> : <span className="text-ink-300/60">Notes…</span>}
+      {hasValue ? <MarkdownText text={props.value} /> : <span className="text-ink-300/60 opacity-0 transition group-hover/note:opacity-100 group-focus-visible/note:opacity-100 [@media(hover:none)]:opacity-100">Notes…</span>}
     </div>
   );
 }
@@ -3013,7 +3031,9 @@ function ChartTransposed(props: {
                 : (iterIdx % 2 === 0 ? 'bg-brand-50 text-brand-700' : 'bg-indigo-50 text-indigo-700');
             const weekBg = isCurrent
               ? 'bg-amber-50 text-amber-800'
-              : isPast ? 'bg-ink-50 text-ink-400' : 'bg-ink-50/70 text-ink-600';
+              : isPast
+                ? 'bg-ink-50 text-ink-400'
+                : 'bg-[color-mix(in_srgb,var(--color-ink-50)_70%,var(--color-white))] text-ink-600';
             const iterationControls = (
               <div className="flex flex-col items-start gap-1">
                 <div className="flex items-center gap-1">
@@ -3038,7 +3058,7 @@ function ChartTransposed(props: {
                 </div>
                 <div className="flex items-center gap-0.5">
                   <label
-                    className="relative inline-flex h-4 w-4 cursor-pointer items-center justify-center rounded text-current opacity-50 transition hover:bg-white/50 hover:opacity-100"
+                    className={'relative inline-flex h-4 w-4 cursor-pointer items-center justify-center rounded text-current transition hover:bg-white/50 ' + ITER_REVEAL}
                     title={`Set start date (currently ${iter.startDate})`}
                   >
                     <svg width="11" height="11" viewBox="0 0 14 14" fill="none" aria-hidden>
@@ -3057,9 +3077,11 @@ function ChartTransposed(props: {
                     />
                   </label>
                   <button
+                    type="button"
                     onClick={() => props.duplicateIteration(iter.id)}
                     title="Duplicate this iteration (copies all assignments to a new iteration at the end)"
-                    className="inline-flex h-4 w-4 items-center justify-center rounded text-current opacity-50 transition hover:bg-white/50 hover:opacity-100"
+                    aria-label="Duplicate iteration"
+                    className={'inline-flex h-4 w-4 items-center justify-center rounded text-current transition hover:bg-white/50 ' + ITER_REVEAL}
                   >
                     <DuplicateIcon />
                   </button>
@@ -3068,7 +3090,8 @@ function ChartTransposed(props: {
                       if (confirm('Remove this iteration (both weeks)?')) props.removeIteration(iter.id);
                     }}
                     title="Remove iteration"
-                    className="inline-flex h-4 w-4 items-center justify-center rounded text-current opacity-50 hover:bg-white/50 hover:opacity-100"
+                    aria-label="Remove iteration"
+                    className={'inline-flex h-4 w-4 items-center justify-center rounded text-current transition hover:bg-white/50 ' + ITER_REVEAL}
                   >
                     ×
                   </button>
@@ -3105,7 +3128,7 @@ function ChartTransposed(props: {
                   </span>
                 )}
                 <label
-                  className="relative ml-0.5 inline-flex h-4 w-4 cursor-pointer items-center justify-center rounded text-current opacity-50 transition hover:bg-white/50 hover:opacity-100"
+                  className={'relative ml-0.5 inline-flex h-4 w-4 cursor-pointer items-center justify-center rounded text-current transition hover:bg-white/50 ' + ITER_REVEAL}
                   title={`Set start date (currently ${iter.startDate})`}
                 >
                   <svg width="11" height="11" viewBox="0 0 14 14" fill="none" aria-hidden>
@@ -3124,9 +3147,11 @@ function ChartTransposed(props: {
                   />
                 </label>
                 <button
+                  type="button"
                   onClick={() => props.duplicateIteration(iter.id)}
                   title="Duplicate this iteration (copies all assignments to a new iteration at the end)"
-                  className="inline-flex h-4 w-4 items-center justify-center rounded text-current opacity-50 transition hover:bg-white/50 hover:opacity-100"
+                  aria-label="Duplicate iteration"
+                  className={'inline-flex h-4 w-4 items-center justify-center rounded text-current transition hover:bg-white/50 ' + ITER_REVEAL}
                 >
                   <DuplicateIcon />
                 </button>
@@ -3135,7 +3160,8 @@ function ChartTransposed(props: {
                     if (confirm('Remove this iteration (both weeks)?')) props.removeIteration(iter.id);
                   }}
                   title="Remove iteration"
-                  className="inline-flex h-4 w-4 items-center justify-center rounded text-current opacity-50 hover:bg-white/50 hover:opacity-100"
+                  aria-label="Remove iteration"
+                  className={'inline-flex h-4 w-4 items-center justify-center rounded text-current transition hover:bg-white/50 ' + ITER_REVEAL}
                 >
                   ×
                 </button>
@@ -3149,7 +3175,7 @@ function ChartTransposed(props: {
                     data-iter-id={iter.id}
                     style={{ left: 0, width: ITER_W, minWidth: ITER_W }}
                     className={
-                      'sticky z-10 border-b border-r border-ink-200 px-2 py-1 align-middle text-[11px] font-semibold uppercase tracking-[0.06em] ' +
+                      'group/iter sticky z-10 border-b border-r border-ink-200 px-2 py-1 align-middle text-[11px] font-semibold uppercase tracking-[0.06em] ' +
                       iterBg
                     }
                   >
@@ -3203,7 +3229,7 @@ function ChartTransposed(props: {
                       rowSpan={weeks.length}
                       style={{ left: 0, width: ITER_W, minWidth: ITER_W }}
                       className={
-                        'sticky z-10 border-b border-r border-ink-200 px-2 py-2 align-top text-[11px] font-semibold uppercase tracking-[0.06em] ' +
+                        'group/iter sticky z-10 border-b border-r border-ink-200 px-2 py-2 align-top text-[11px] font-semibold uppercase tracking-[0.06em] ' +
                         iterBg
                       }
                     >
@@ -3385,9 +3411,11 @@ function Cell(props: {
       <div className="flex min-h-[48px] flex-col items-start justify-center gap-1 px-0.5">
         {hasUnavailable ? (
           <div className="flex w-full items-center justify-center">
-            <span
+            <button
+              type="button"
               className="group/na inline-flex cursor-pointer items-center gap-1 rounded px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-ink-400 transition hover:bg-white/60 hover:text-ink-600"
               title="Click to remove N/A status"
+              aria-label="Remove N/A status"
               onClick={e => {
                 e.stopPropagation();
                 const ua = props.assignments.find(a => isUnavailable(a.projectId));
@@ -3395,8 +3423,8 @@ function Cell(props: {
               }}
             >
               N/A
-              <span className="text-[9px] opacity-0 group-hover/na:opacity-100">×</span>
-            </span>
+              <span className="text-[9px] opacity-0 group-hover/na:opacity-100 group-focus-visible/na:opacity-100" aria-hidden>×</span>
+            </button>
           </div>
         ) : (
         <>
@@ -3450,7 +3478,6 @@ function Cell(props: {
               isPto={isPto(a.projectId)}
               isFR={isFR(a.projectId)}
               isUnavailable={isUnavailable(a.projectId)}
-              isOwnDri={proj.driId === props.personId}
               muted={props.isPastWeek || (props.highlightedProjectId != null && props.highlightedProjectId !== a.projectId)}
               onDragStart={e => {
                 e.dataTransfer.setData('application/x-assignment', a.id);
@@ -3497,18 +3524,17 @@ function AssignChip(props: {
   isPto?: boolean;
   isFR?: boolean;
   isUnavailable?: boolean;
-  isOwnDri: boolean;
   muted?: boolean;
   onDragStart: (e: React.DragEvent) => void;
   onClick: (e: React.MouseEvent) => void;
   onRemove: () => void;
   onStartExtend: () => void;
 }) {
-  const { project, isOwnDri, isPto: pto, isFR: fr, isUnavailable: unavail } = props;
+  const { project, isPto: pto, isFR: fr, isUnavailable: unavail } = props;
   const isSentinelChip = pto || fr || unavail;
   const ink = isSentinelChip ? 'var(--color-ink-700)' : undefined;
   const baseClass =
-    'group/chip relative inline-flex max-w-full min-w-0 cursor-grab items-center gap-1 rounded-md px-2.5 py-[3px] pr-3 text-left text-[11px] font-semibold leading-tight transition-transform active:cursor-grabbing hover:-translate-y-px';
+    'group/chip relative inline-flex max-w-full min-w-0 cursor-grab items-center gap-1 rounded-md px-2.5 py-[3px] pr-3 text-left text-[11px] font-semibold leading-tight transition-[filter] active:cursor-grabbing hover:brightness-95';
   const chipStyle: React.CSSProperties = isSentinelChip
     ? { color: ink }
     : ({
@@ -3532,7 +3558,6 @@ function AssignChip(props: {
           ? 'Not available'
           : project.name +
             (props.milestone ? ` · ${milestoneLabel(props.milestone)}` : '') +
-            (isOwnDri ? ' · DRI' : '') +
             ((props.milestone?.url ?? project.url) ? `\nClick to open ${props.milestone?.url ?? project.url}` : '') +
             (props.onOpenMilestones ? '\nUse ◆ to pick a milestone' : '')
       }
@@ -3562,16 +3587,7 @@ function AssignChip(props: {
         <span className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center text-[10px]" aria-hidden>
           ∅
         </span>
-      ) : (
-        isOwnDri && (
-          <span
-            className="inline-flex shrink-0 items-center justify-center rounded bg-amber-100 px-1 text-[7px] font-bold uppercase tracking-wide text-amber-700"
-            title="DRI"
-          >
-            DRI
-          </span>
-        )
-      )}
+      ) : null}
       {props.milestone && !isSentinelChip ? (
         <span className="flex min-w-0 flex-col leading-tight">
           <span className="truncate">{project.name}</span>
@@ -3595,7 +3611,7 @@ function AssignChip(props: {
             e.stopPropagation();
             props.onOpenMilestones!((e.currentTarget as HTMLElement).getBoundingClientRect());
           }}
-          className="ml-0.5 inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full text-[8px] opacity-0 transition group-hover/chip:opacity-60 focus-visible:opacity-100 focus-visible:outline focus-visible:outline-2 hover:!opacity-100 hover:bg-black/15"
+          className="-my-0.5 ml-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] opacity-0 transition group-hover/chip:opacity-60 focus-visible:opacity-100 focus-visible:outline focus-visible:outline-2 hover:!opacity-100 hover:bg-black/15"
         >
           ◆
         </button>
@@ -4127,47 +4143,6 @@ function ProjectPicker(props: {
         />
       </div>
       <div className="flex-1 overflow-y-auto p-1.5">
-        <button
-          className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[13px] text-ink-700 transition hover:bg-ink-100"
-          onClick={() => props.onPick(PTO_ID)}
-          title="Mark this week as PTO (not a project)"
-        >
-          <span
-            className="inline-block h-3.5 w-3.5 rounded-full border border-ink-300/70 pattern-stripe-dense"
-            aria-hidden
-          />
-          <span className="font-semibold uppercase tracking-[0.06em] text-ink-600">PTO</span>
-          <span className="ml-auto text-[11px] text-ink-400">time off</span>
-        </button>
-        <button
-          className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[13px] text-ink-700 transition hover:bg-ink-100"
-          onClick={() => props.onPick(FR_ID)}
-          title="Mark this week as first-responder (on-call) duty"
-        >
-          <span
-            className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-full border border-amber-400/80 bg-amber-100 text-[8px] text-amber-700"
-            aria-hidden
-          >
-            ⚡
-          </span>
-          <span className="font-semibold uppercase tracking-[0.06em] text-ink-600">FR</span>
-          <span className="ml-auto text-[11px] text-ink-400">first responder</span>
-        </button>
-        <button
-          className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-left text-[13px] text-ink-700 transition hover:bg-ink-100"
-          onClick={() => props.onPick(UNAVAILABLE_ID)}
-          title="Mark this person as not available this week"
-        >
-          <span
-            className="inline-block h-3.5 w-3.5 rounded-full border border-ink-400/70 bg-ink-300"
-            aria-hidden
-          />
-          <span className="font-semibold uppercase tracking-[0.06em] text-ink-600">N/A</span>
-          <span className="ml-auto text-[11px] text-ink-400">not available</span>
-        </button>
-        {props.projects.length > 0 && (
-          <div className="my-1.5 border-t border-ink-100" />
-        )}
         {filtered.length === 0 && props.projects.length > 0 && (
           <div className="px-3 py-6 text-center text-[12px] text-ink-500">No projects match.</div>
         )}
@@ -4212,6 +4187,45 @@ function ProjectPicker(props: {
           </div>
         ))}
       </div>
+      <div className="flex gap-1 border-t border-ink-200 p-1.5">
+        {SENTINEL_PICKS.map(opt => (
+          <button
+            key={opt.id}
+            type="button"
+            className="flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-[11px] font-semibold uppercase tracking-[0.06em] text-ink-600 transition hover:bg-ink-100"
+            onClick={() => props.onPick(opt.id)}
+            title={opt.title}
+          >
+            {opt.swatch}
+            {opt.label}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
+
+const SENTINEL_PICKS: { id: ID; label: string; title: string; swatch: React.ReactNode }[] = [
+  {
+    id: PTO_ID,
+    label: 'PTO',
+    title: 'Mark this week as PTO (not a project)',
+    swatch: <span className="inline-block h-3 w-3 rounded-full border border-ink-300/70 pattern-stripe-dense" aria-hidden />,
+  },
+  {
+    id: FR_ID,
+    label: 'FR',
+    title: 'Mark this week as first-responder (on-call) duty',
+    swatch: (
+      <span className="inline-flex h-3 w-3 items-center justify-center rounded-full border border-amber-400/80 bg-amber-100 text-[7px] text-amber-700" aria-hidden>
+        ⚡
+      </span>
+    ),
+  },
+  {
+    id: UNAVAILABLE_ID,
+    label: 'N/A',
+    title: 'Mark this person as not available this week',
+    swatch: <span className="inline-block h-3 w-3 rounded-full border border-ink-400/70 bg-ink-300" aria-hidden />,
+  },
+];
