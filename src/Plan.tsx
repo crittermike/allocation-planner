@@ -28,6 +28,7 @@ import type { Assignment, Milestone, Project } from './types';
 import type { TargetStatus } from './scope';
 import { UndoToast } from './Toast';
 import { canUndoToast, type UndoToast as UndoToastState } from './undoToast';
+import { layoutRuns, type PersonLanes, type RunLayout, type RunSlot } from './runs';
 
 type ID = string;
 
@@ -1919,6 +1920,25 @@ function IterationGoal(props: {
 }
 
 /** Iteration header controls stay hidden until the header is hovered or focused. */
+/** Lane layout for drawing consecutive weeks of the same work as one bar. */
+function useRunLayout(
+  assignments: Assignment[],
+  iterationRows: { isCollapsed: boolean; weeks: WeekInfo[] }[],
+  projectsById: Record<ID, Project>,
+): RunLayout {
+  return useMemo(
+    () => layoutRuns(
+      assignments,
+      iterationRows.flatMap(row => row.isCollapsed ? [null] : row.weeks.map(w => w.id)),
+      {
+        isBlocker: a => isUnavailable(a.projectId),
+        isTall: a => !isSentinel(a.projectId) && !!milestoneOf(lookupProject(projectsById, a.projectId), a.milestoneId),
+      },
+    ),
+    [assignments, iterationRows, projectsById],
+  );
+}
+
 const ITER_REVEAL =
   'opacity-0 group-hover/iter:opacity-50 group-focus-within/iter:opacity-50 [@media(hover:none)]:opacity-50 hover:!opacity-100 focus-visible:!opacity-100 focus-within:!opacity-100';
 
@@ -1977,6 +1997,7 @@ function Chart(props: {
     0,
   );
   const hasReleases = Object.values(props.releasesByWeek).some(releases => releases.length > 0);
+  const runLayout = useRunLayout(state.assignments, iterationRows, projectsById);
 
   /* ------ Click-drag-to-extend ------
    * When the user grabs the right edge of a chip and drags right, we add
@@ -2302,7 +2323,9 @@ function Chart(props: {
                       onRemove={props.removeAssignment}
                       onPick={rect => setPicker({ personId: person.id, weekId: w.id, rect })}
                       onStartExtend={(projectId, milestoneId) => startExtend(person.id, projectId, milestoneId, w.id)}
-                        onSetMilestone={props.setAssignmentMilestone}
+                      onSetMilestone={props.setAssignmentMilestone}
+                      lanes={runLayout.lanesByPerson[person.id]}
+                      slots={runLayout.slots}
                     />
                   );
                 });
@@ -2940,6 +2963,7 @@ function ChartTransposed(props: {
     });
     return indexById;
   }, [visibleWeeks]);
+  const runLayout = useRunLayout(state.assignments, iterationRows, projectsById);
   const [extending, setExtending] = useState<null | {
     personId: ID;
     projectId: ID;
@@ -3336,7 +3360,10 @@ function ChartTransposed(props: {
                         onRemove={props.removeAssignment}
                         onPick={rect => setPicker({ personId: person.id, weekId: w.id, rect })}
                         onStartExtend={(projectId, milestoneId) => startExtend(person.id, projectId, milestoneId, w.id)}
-                      onSetMilestone={props.setAssignmentMilestone}
+                        onSetMilestone={props.setAssignmentMilestone}
+                        lanes={runLayout.lanesByPerson[person.id]}
+                        slots={runLayout.slots}
+                        vertical
                       />
                     );
                   })}
@@ -3405,6 +3432,10 @@ function Cell(props: {
   onPick: (rect: DOMRect) => void;
   onStartExtend: (projectId: ID, milestoneId?: ID) => void;
   onSetMilestone: (assignmentId: ID, milestoneId: ID | undefined) => void;
+  lanes?: PersonLanes;
+  slots: Record<ID, RunSlot>;
+  /** Weeks run down the page, so runs join top to bottom. */
+  vertical?: boolean;
 }) {
   const [hover, setHover] = useState(false);
   const [milestoneMenu, setMilestoneMenu] = useState<{ assignmentId: ID; rect: DOMRect } | null>(null);
@@ -3452,6 +3483,7 @@ function Cell(props: {
       data-wid={props.weekId}
       className={
         'group/cell relative min-h-[64px] min-w-[160px] cursor-pointer border-b-2 border-r border-ink-200 p-1.5 align-middle transition-colors ' +
+        (props.vertical ? 'h-px ' : '') +
         baseBg +
         (props.isIterEnd ? ' border-r-2 border-r-ink-300' : '') +
         (hover ? ' !bg-brand-50 ring-2 ring-inset ring-brand-400' : '') +
@@ -3464,7 +3496,13 @@ function Cell(props: {
       onClick={() => cellRef.current && props.onPick(cellRef.current.getBoundingClientRect())}
       title="Click to add a project, or drag one in"
     >
-      <div className="flex min-h-[48px] flex-col items-start justify-center gap-1 px-0.5">
+      <div
+        className={
+          props.vertical && props.assignments.length > 0 && !hasUnavailable
+            ? 'flex h-full min-h-[48px] flex-row items-stretch gap-1 px-0.5'
+            : 'flex min-h-[48px] flex-col items-start justify-center gap-1 px-0.5'
+        }
+      >
         {hasUnavailable ? (
           <div className="flex w-full items-center justify-center">
             <button
@@ -3518,36 +3556,69 @@ function Cell(props: {
             )}
           </span>
         )}
-        {props.assignments.map(a => {
-          const proj = lookupProject(props.projectsById, a.projectId);
-          if (!proj) return null;
-          const milestone = milestoneOf(proj, a.milestoneId);
-          const openUrl = milestone?.url ?? proj.url;
+        {(() => {
+          const renderChip = (a: Assignment) => {
+            const proj = lookupProject(props.projectsById, a.projectId);
+            if (!proj) return null;
+            const milestone = milestoneOf(proj, a.milestoneId);
+            const openUrl = milestone?.url ?? proj.url;
+            const slot = props.slots[a.id];
+            return (
+              <AssignChip
+                key={a.id}
+                project={proj}
+                milestone={milestone}
+                onOpenMilestones={proj.milestones?.length
+                  ? rect => setMilestoneMenu({ assignmentId: a.id, rect })
+                  : undefined}
+                isPto={isPto(a.projectId)}
+                isFR={isFR(a.projectId)}
+                isUnavailable={isUnavailable(a.projectId)}
+                muted={props.isPastWeek || (props.highlightedProjectId != null && props.highlightedProjectId !== a.projectId)}
+                joinPrev={slot?.joinPrev}
+                joinNext={slot?.joinNext}
+                vertical={props.vertical}
+                onDragStart={e => {
+                  e.dataTransfer.setData('application/x-assignment', a.id);
+                  e.dataTransfer.effectAllowed = 'move';
+                }}
+                onClick={e => {
+                  e.stopPropagation();
+                  if (openUrl) window.open(openUrl, '_blank', 'noopener,noreferrer');
+                }}
+                onRemove={() => props.onRemove(a.id)}
+                onStartExtend={() => props.onStartExtend(a.projectId, milestone?.id)}
+              />
+            );
+          };
+          const laneCount = props.lanes?.count ?? 0;
+          if (props.assignments.length === 0 || laneCount === 0) return props.assignments.map(renderChip);
+          // Every cell in a person's row (or column) draws the same lanes, so runs line up.
+          const lanes: (Assignment | undefined)[] = Array.from({ length: laneCount }, () => undefined);
+          const unplaced: Assignment[] = [];
+          for (const a of props.assignments) {
+            const lane = props.slots[a.id]?.lane;
+            if (lane != null && lane < laneCount && !lanes[lane]) lanes[lane] = a;
+            else unplaced.push(a);
+          }
           return (
-            <AssignChip
-              key={a.id}
-              project={proj}
-              milestone={milestone}
-              onOpenMilestones={proj.milestones?.length
-                ? rect => setMilestoneMenu({ assignmentId: a.id, rect })
-                : undefined}
-              isPto={isPto(a.projectId)}
-              isFR={isFR(a.projectId)}
-              isUnavailable={isUnavailable(a.projectId)}
-              muted={props.isPastWeek || (props.highlightedProjectId != null && props.highlightedProjectId !== a.projectId)}
-              onDragStart={e => {
-                e.dataTransfer.setData('application/x-assignment', a.id);
-                e.dataTransfer.effectAllowed = 'move';
-              }}
-              onClick={e => {
-                e.stopPropagation();
-                if (openUrl) window.open(openUrl, '_blank', 'noopener,noreferrer');
-              }}
-              onRemove={() => props.onRemove(a.id)}
-              onStartExtend={() => props.onStartExtend(a.projectId, milestone?.id)}
-            />
+            <>
+              {lanes.map((a, i) => (
+                <div
+                  key={i}
+                  className={
+                    props.vertical
+                      ? 'flex min-w-0 flex-1 flex-col justify-center'
+                      : 'flex w-full items-center ' + (props.lanes?.tall[i] ? 'h-[34px]' : 'h-[22px]')
+                  }
+                >
+                  {a && renderChip(a)}
+                </div>
+              ))}
+              {unplaced.map(renderChip)}
+            </>
           );
-        })}
+        })()}
         </>
         )}
       </div>
@@ -3581,19 +3652,44 @@ function AssignChip(props: {
   isFR?: boolean;
   isUnavailable?: boolean;
   muted?: boolean;
+  /** Continues the same work from the previous / into the next visible week. */
+  joinPrev?: boolean;
+  joinNext?: boolean;
+  vertical?: boolean;
   onDragStart: (e: React.DragEvent) => void;
   onClick: (e: React.MouseEvent) => void;
   onRemove: () => void;
   onStartExtend: () => void;
 }) {
-  const { project, isPto: pto, isFR: fr, isUnavailable: unavail } = props;
+  const { project, isPto: pto, isFR: fr, isUnavailable: unavail, joinPrev, joinNext, vertical } = props;
   const isSentinelChip = pto || fr || unavail;
   const ink = isSentinelChip ? 'var(--color-ink-700)' : undefined;
+  const joined = !!(joinPrev || joinNext);
+  // Joined segments reach past the cell padding so a run reads as one bar.
+  const runClass = vertical
+    ? (joined ? ' flex-1 self-stretch !items-start' : ' self-start') +
+      (joinPrev ? ' rounded-t-none border-t-0' : '') +
+      (joinNext ? ' rounded-b-none border-b-0' : '')
+    : ' h-full' +
+      (joinPrev ? ' rounded-l-none border-l-0' : '') +
+      (joinNext ? ' rounded-r-none border-r-0' : '');
+  const runStyle: React.CSSProperties = vertical
+    ? { marginTop: joinPrev ? -6 : undefined, marginBottom: joinNext ? -6 : undefined }
+    : joined
+    ? {
+        marginLeft: joinPrev ? -8 : undefined,
+        marginRight: joinNext ? -8 : undefined,
+        width: `calc(100% + ${(joinPrev ? 8 : 0) + (joinNext ? 8 : 0)}px)`,
+        maxWidth: 'none',
+      }
+    : {};
   const baseClass =
-    'group/chip relative inline-flex max-w-full min-w-0 cursor-grab items-center gap-1 rounded-md px-2.5 py-[3px] pr-3 text-left text-[11px] font-semibold leading-tight transition-[filter] active:cursor-grabbing hover:brightness-95';
+    'group/chip relative inline-flex max-w-full min-w-0 cursor-grab items-center gap-1 rounded-md px-2.5 py-[3px] pr-3 text-left text-[11px] font-semibold leading-tight transition-[filter] active:cursor-grabbing hover:brightness-95' +
+    runClass;
   const chipStyle: React.CSSProperties = isSentinelChip
-    ? { color: ink }
+    ? { ...runStyle, color: ink }
     : ({
+        ...runStyle,
         ['--cc' as string]: project.color,
         ['--cc-dark' as string]: darkBgFor(project.color),
       } as React.CSSProperties);
@@ -3631,7 +3727,9 @@ function AssignChip(props: {
       }
       style={mutedStyle}
     >
-      {pto ? (
+      {joinPrev ? (
+        <span className="min-w-0 flex-1" aria-hidden />
+      ) : pto ? (
         <span className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center text-[10px]" aria-hidden>
           ☀
         </span>
@@ -3644,7 +3742,7 @@ function AssignChip(props: {
           ∅
         </span>
       ) : null}
-      {props.milestone && !isSentinelChip ? (
+      {joinPrev ? null : props.milestone && !isSentinelChip ? (
         <span className="flex min-w-0 flex-col leading-tight">
           <span className="truncate">{project.name}</span>
           <span className="flex min-w-0 items-center gap-1 text-[10px] font-medium opacity-80">
@@ -3681,8 +3779,8 @@ function AssignChip(props: {
       >
         ×
       </span>
-      {/* Right-edge handle: drag to extend this assignment across consecutive weeks */}
-      <span
+      {/* Run end handle: drag to extend this assignment across consecutive weeks */}
+      {!joinNext && <span
         onMouseDown={e => {
           // Suppress native HTML5 drag (the chip itself is draggable for moves)
           // and the cell-click that would open the picker, then start extend.
@@ -3699,7 +3797,7 @@ function AssignChip(props: {
           className="block h-3 w-[2px] rounded-full bg-current opacity-60"
           aria-hidden
         />
-      </span>
+      </span>}
     </span>
   );
 }
