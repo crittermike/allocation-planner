@@ -726,6 +726,44 @@ export function targetStatus(s: ScopeSummary, target: string | undefined): Targe
   return f.central?.date && mondayOf(parseDay(f.central.date)) === mondayOf(parseDay(target)) ? 'at-risk' : 'late';
 }
 
+export type ReleaseForecast = {
+  status: TargetStatus;
+  /** Monday (YYYY-MM-DD) of the week work is forecast to finish, as the milestone table
+   *  shows it; the earliest week for a range. Null when there's no finish in sight. */
+  finishWeek: string | null;
+  /** Monday of the latest forecast week, when a range spans several weeks. */
+  finishWeekEnd?: string;
+};
+
+/** How a release card's work tracks against its ship date. A milestone card uses its
+ *  epic's milestone with the same issue URL; a project card uses the whole issue, unless
+ *  it's an epic, which has no combined forecast. */
+export function releaseForecast(
+  a: ScopeAnalysis,
+  milestoneUrl: string | undefined,
+  target: string,
+): ReleaseForecast | null {
+  let view: ScopeView | undefined;
+  if (milestoneUrl) {
+    const ref = parseGitHubIssueUrl(milestoneUrl);
+    if (!ref || !a.hasBreakdown) return null;
+    view = a.views.find(v => {
+      const vRef = v.issue ? parseGitHubIssueUrl(v.issue.url) : null;
+      return vRef !== null && issueKey(vRef) === issueKey(ref);
+    });
+  } else if (!a.hasBreakdown) {
+    view = a.views[0];
+  }
+  if (!view) return null;
+  const status = targetStatus(view.summary, target);
+  if (!status) return null;
+  const f = projectFinish(view.summary, 1);
+  const week = (p: Projection | null | undefined) => (p?.date ? isoDay(mondayOf(parseDay(p.date))) : null);
+  const finishWeek = week(f?.isRange ? f.fastest : f?.central);
+  const finishWeekEnd = f?.isRange && finishWeek ? week(f.slowest) : null;
+  return finishWeekEnd && finishWeekEnd !== finishWeek ? { status, finishWeek, finishWeekEnd } : { status, finishWeek };
+}
+
 /** Changes with repeats per issue collapsed to the net change: a finish undone by a
  *  reopen (or the reverse), or an add undone by a removal, drops both. Newest first. */
 export function netChanges(events: ScopeEvent[]): ScopeEvent[] {

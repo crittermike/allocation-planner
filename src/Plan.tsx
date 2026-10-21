@@ -13,6 +13,7 @@ import {
 import { deriveCapacity } from './capacityShared';
 import { ColorPopover, ProjectEditModal } from './ProjectModal';
 import { LoadError, OfflineBanner } from './ConnectionStatus';
+import { useReleaseForecasts } from './releaseForecasts';
 import {
   milestoneLabel,
   milestoneOf,
@@ -24,6 +25,7 @@ import {
   type ScheduledRelease,
 } from './milestones';
 import type { Assignment, Milestone, Project } from './types';
+import type { TargetStatus } from './scope';
 import { UndoToast } from './Toast';
 import { canUndoToast, type UndoToast as UndoToastState } from './undoToast';
 
@@ -493,9 +495,10 @@ function PlanView({
     () => state.iterations.flatMap(weeksOfIteration),
     [state.iterations],
   );
+  const releaseForecasts = useReleaseForecasts(slug, state.projects);
   const releasesByWeek = useMemo(
-    () => groupReleasesByWeek(state.projects, allWeeks),
-    [state.projects, allWeeks],
+    () => groupReleasesByWeek(state.projects, allWeeks, releaseForecasts),
+    [state.projects, allWeeks, releaseForecasts],
   );
   const iterationToneById = useMemo(() => {
     const today = startOfToday();
@@ -2509,6 +2512,13 @@ function CollapsedIterationCell(props: {
   );
 }
 
+const FORECAST_LABEL: Record<TargetStatus, string> = { 'on-track': 'On track', 'at-risk': 'At risk', late: 'Late' };
+const FORECAST_DOT: Record<TargetStatus, string> = {
+  'on-track': 'bg-emerald-500',
+  'at-risk': 'bg-amber-500',
+  late: 'bg-rose-600',
+};
+
 function WeekReleases({ releases, onEdit, showHeading = false }: {
   releases: ScheduledRelease[];
   onEdit: (id: ID) => void;
@@ -2521,18 +2531,27 @@ function WeekReleases({ releases, onEdit, showHeading = false }: {
         <div className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-500">Releases</div>
       )}
       <ul aria-label="Scheduled releases" className="space-y-1">
-        {releases.map(({ key, project, milestone, releaseDate }) => {
+        {releases.map(({ key, project, milestone, releaseDate, forecast }) => {
           const date = parseISODate(releaseDate);
           const fullDate = date.toLocaleDateString('en-US', { dateStyle: 'full' });
           const projectName = project.name || 'Untitled project';
           const name = milestone ? `${projectName} · ${milestoneLabel(milestone)}` : projectName;
+          const day = (iso: string) => parseISODate(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+          const finish = forecast?.finishWeek
+            ? `${day(forecast.finishWeek)}${forecast.finishWeekEnd ? `–${day(forecast.finishWeekEnd).replace(/^[A-Za-z]+ /, '')}` : ''}`
+            : null;
+          const forecastText = forecast
+            ? `${FORECAST_LABEL[forecast.status]}${finish
+              ? `, forecast to finish the week of ${finish}`
+              : forecast.status === 'late' && releaseDate >= toISODate(startOfToday()) ? ', no finish in sight at the current pace' : ''}`
+            : '';
           return (
             <li key={key}>
               <button
                 type="button"
                 onClick={e => { e.stopPropagation(); onEdit(project.id); }}
-                title={`${name}\n${milestone ? 'Milestone ship date' : 'Communicated release'}: ${fullDate}\nClick to edit project`}
-                aria-label={`${name} ${milestone ? 'milestone ships' : 'releases'} ${fullDate}; edit project`}
+                title={`${name}\n${milestone ? 'Milestone ship date' : 'Communicated release'}: ${fullDate}${forecast ? `\nScope: ${forecastText}` : ''}\nClick to edit project`}
+                aria-label={`${name} ${milestone ? 'milestone ships' : 'releases'} ${fullDate}${forecast ? `; ${forecastText}` : ''}; edit project`}
                 className="chip-tint flex w-full max-w-[240px] items-center gap-2 rounded-md border px-2 py-1.5 text-left transition-shadow hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-400"
                 style={{
                   ['--cc' as string]: project.color,
@@ -2552,9 +2571,16 @@ function WeekReleases({ releases, onEdit, showHeading = false }: {
                       <span className="truncate">{milestoneLabel(milestone)}</span>
                     </span>
                   )}
-                  <time dateTime={releaseDate} className="block text-[10px] leading-snug tabular-nums">
-                    {date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
-                  </time>
+                  <span className="flex items-center gap-1.5 text-[10px] leading-snug tabular-nums">
+                    <time dateTime={releaseDate}>
+                      {date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
+                    </time>
+                    {forecast && (forecast.status === 'late' && finish ? (
+                      <span className="rounded-sm bg-rose-600 px-1 font-semibold text-[#fff]" aria-hidden>→ {finish}</span>
+                    ) : (
+                      <span className={`h-2 w-2 shrink-0 rounded-full ring-1 ring-white/80 ${FORECAST_DOT[forecast.status]}`} aria-hidden />
+                    ))}
+                  </span>
                 </span>
               </button>
             </li>

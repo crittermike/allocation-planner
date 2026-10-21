@@ -26,6 +26,9 @@ export const DEMO_SCENARIOS = [
 
 export type DemoScenario = (typeof DEMO_SCENARIOS)[number]['id'];
 
+/** Demo scenario picked per URL, kept while the page is open. */
+export const chosenScenarios = new Map<string, DemoScenario>();
+
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;

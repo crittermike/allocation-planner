@@ -32,8 +32,8 @@ import {
   type ScopeView,
   type TargetStatus,
 } from './scope';
-import { requestScope, type ScopeConfig, type ScopeResponse } from './scopeApi';
-import { DEMO_SCENARIOS, demoScope, isDemoIssue, type DemoScenario } from './scopeDemo';
+import { lastScope, requestScope, storeScope, type ScopeConfig, type ScopeResponse } from './scopeApi';
+import { DEMO_SCENARIOS, chosenScenarios, demoScope, isDemoIssue, type DemoScenario } from './scopeDemo';
 import type { Milestone, Project } from './types';
 
 export type ScopeSource = 'demo' | 'github';
@@ -291,9 +291,6 @@ function Unreadable({ issue, at }: { issue: GitHubIssueRef; at: string }) {
   );
 }
 
-/** Demo scenario picked per URL, kept while the page is open. */
-const chosenScenarios = new Map<string, DemoScenario>();
-
 function DemoScope({ issue, releaseDate, projects, onStatusChange, milestone, onMilestoneChange, milestones, onMilestonesFound }: PanelProps) {
   const [scenario, setScenario] = useState<DemoScenario>(() => chosenScenarios.get(issue.url) ?? 'normal');
   const load = useMemo(() => demoScope(issue, scenario), [issue.url, scenario]);
@@ -348,9 +345,6 @@ const URL_SETTLE_MS = 700;
 const POLL_MS = 4000;
 const MAX_POLLS = 15;
 
-/** Last response per plan and issue, so reopening a project shows it right away. */
-const lastResponses = new Map<string, ScopeResponse>();
-
 function GitHubScope({
   slug,
   issue,
@@ -363,8 +357,7 @@ function GitHubScope({
   milestones,
   onMilestonesFound,
 }: PanelProps) {
-  const cacheKey = `${slug}\n${issue.url}`;
-  const [response, setResponse] = useState<ScopeResponse | null>(() => lastResponses.get(cacheKey) ?? null);
+  const [response, setResponse] = useState<ScopeResponse | null>(() => lastScope(slug, issue.url) ?? null);
   const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
@@ -381,7 +374,7 @@ function GitHubScope({
         timer = window.setTimeout(load, 1500);
         return;
       }
-      lastResponses.set(cacheKey, res);
+      storeScope(slug, issue.url, res);
       setResponse(res);
       if (res.status === 'ready' && res.refreshing && polls++ < MAX_POLLS) {
         timer = window.setTimeout(load, POLL_MS);
@@ -392,12 +385,12 @@ function GitHubScope({
       alive = false;
       window.clearTimeout(timer);
     };
-  }, [slug, issue.url, settleMs, cacheKey]);
+  }, [slug, issue.url, settleMs]);
 
   const refresh = async () => {
     setRefreshing(true);
     const res = await requestScope(slug, issue.url, true);
-    lastResponses.set(cacheKey, res);
+    storeScope(slug, issue.url, res);
     setResponse(res);
     setRefreshing(false);
   };

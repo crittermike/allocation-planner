@@ -1,3 +1,4 @@
+import type { ReleaseForecast } from './scope';
 import type { Assignment, ID, Milestone, PlanState, Project } from './types';
 
 /* Project milestones: plannable slices of a project. An assignment may name one
@@ -144,6 +145,8 @@ export type ScheduledRelease = {
   project: Project;
   milestone?: Milestone;
   releaseDate: string;
+  /** Scope forecast against the ship date, for releases linked to GitHub. */
+  forecast?: ReleaseForecast;
 };
 
 /** Add whole calendar days to a YYYY-MM-DD date. Uses UTC so DST changes can't shift the day. */
@@ -181,8 +184,12 @@ export function scheduledReleases(projects: Project[]): ScheduledRelease[] {
 export function releasesByWeek(
   projects: Project[],
   weeks: { id: string; startDate: string }[],
+  forecasts?: Map<string, ReleaseForecast>,
 ): Record<string, ScheduledRelease[]> {
-  const releases = scheduledReleases(projects);
+  const releases = scheduledReleases(projects).map(r => {
+    const forecast = forecasts?.get(r.key);
+    return forecast ? { ...r, forecast } : r;
+  });
   return Object.fromEntries(weeks.map(week => {
     const end = addCalendarDays(week.startDate, 7);
     return [week.id, releases.filter(r => r.releaseDate >= week.startDate && r.releaseDate < end)];

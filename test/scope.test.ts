@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_POINTS, netChanges, pointsOf, targetStatus, type ScopeEvent, type ScopeSummary } from '../src/scope.ts';
+import { DEFAULT_POINTS, netChanges, pointsOf, releaseForecast, targetStatus, type ScopeAnalysis, type ScopeEvent, type ScopeSummary } from '../src/scope.ts';
 import { pointsFrom } from '../server/scope.js';
 
 test('pointsOf defaults to 3 when unset or invalid', () => {
@@ -51,6 +51,29 @@ test('targetStatus: a passed target is late; nothing to compare is null', () => 
   assert.equal(targetStatus(summary({ status: 'too-early', pace: null }), '2026-11-06'), null);
   assert.equal(targetStatus(summary({ status: 'done', remaining: 0 }), '2026-10-16'), null);
   assert.equal(targetStatus(summary({}), undefined), null);
+});
+
+const url = (n: number) => `https://github.com/acme/app/issues/${n}`;
+const epic = (views: [number, ScopeSummary][]): ScopeAnalysis => ({
+  views: views.map(([n, s]) => ({ id: `m${n}`, label: `M${n}`, issue: { url: url(n) } as ScopeAnalysis['views'][number]['issue'], summary: s })),
+  hasBreakdown: true, defaultViewId: 'm1', reference: [], outside: null,
+});
+
+test('releaseForecast: a milestone card uses its epic milestone and shows the forecast finish when late', () => {
+  const a = epic([[11, summary({ status: 'just-started' }, [[2, 0], [0.5, 0]])], [12, summary({})]]);
+  assert.deepEqual(releaseForecast(a, url(12), '2026-10-30'), { status: 'late', finishWeek: '2026-11-02' });
+  assert.deepEqual(releaseForecast(a, url(12), '2026-11-06'), { status: 'on-track', finishWeek: '2026-11-02' });
+  // A range of estimates shows its first and last finish weeks, as the milestone table does.
+  assert.deepEqual(releaseForecast(a, url(11), '2026-11-06'), { status: 'at-risk', finishWeek: '2026-10-26', finishWeekEnd: '2026-11-16' });
+  assert.equal(releaseForecast(a, url(99), '2026-10-30'), null);
+  // An epic has no combined forecast, so its own release card shows nothing.
+  assert.equal(releaseForecast(a, undefined, '2026-10-30'), null);
+});
+
+test('releaseForecast: a project card uses the whole issue when it has no milestones', () => {
+  const single: ScopeAnalysis = { ...epic([]), hasBreakdown: false, views: [{ id: 'all', label: 'All', issue: null, summary: summary({}, [[1, 1]]) }] };
+  assert.deepEqual(releaseForecast(single, undefined, '2027-06-01'), { status: 'late', finishWeek: null });
+  assert.equal(releaseForecast(single, url(12), '2027-06-01'), null);
 });
 
 const issue = (n: number) => ({ id: `i${n}`, number: n, title: `#${n}` }) as ScopeEvent['issue'];
