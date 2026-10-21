@@ -11,6 +11,7 @@ import {
   exportPlanMarkdown,
 } from './Capacity';
 import { deriveCapacity } from './capacityShared';
+import { belowLineIds, fitLineIndex } from './fitLine';
 import { ColorPopover, ProjectEditModal } from './ProjectModal';
 import { LoadError, OfflineBanner } from './ConnectionStatus';
 import { useReleaseForecasts } from './releaseForecasts';
@@ -1062,15 +1063,42 @@ function PlanView({
     [state.projects],
   );
   const unrankedCount = activeInitiatives.filter(p => p.priority == null).length;
-  const fitMarkerIndex = useMemo(() => {
-    if (!cap.hasConfiguredQuarter) return -1;
-    let cum = 0;
-    for (let i = 0; i < activeInitiatives.length; i++) {
-      cum += activeInitiatives[i].estimateEM ?? 0;
-      if (cum > cap.capacityEM + 0.0001) return i;
-    }
-    return -1;
-  }, [activeInitiatives, cap.capacityEM, cap.hasConfiguredQuarter]);
+  const fitMarkerIndex = useMemo(
+    () => fitLineIndex(activeInitiatives, cap.capacityEM, cap.hasConfiguredQuarter),
+    [activeInitiatives, cap.capacityEM, cap.hasConfiguredQuarter],
+  );
+  const belowLineProjectIds = useMemo(
+    () => belowLineIds(activeInitiatives, showWhatFits ? fitMarkerIndex : -1),
+    [activeInitiatives, fitMarkerIndex, showWhatFits],
+  );
+
+  // After a short hover on a project, bring its first chip into view if none are visible.
+  useEffect(() => {
+    if (!highlightedProjectId) return;
+    const t = window.setTimeout(() => {
+      const scroller = chartScrollRef.current;
+      if (!scroller) return;
+      const chips = Array.from(
+        scroller.querySelectorAll<HTMLElement>(`[data-chip-project="${CSS.escape(highlightedProjectId)}"]`),
+      );
+      if (!chips.length) return;
+      const box = scroller.getBoundingClientRect();
+      const rects = chips.map(el => el.getBoundingClientRect());
+      const visible = rects.some(r => r.right > box.left && r.left < box.right && r.bottom > box.top && r.top < box.bottom);
+      if (visible) return;
+      const first = rects.reduce((a, r) =>
+        (transposed ? r.top < a.top || (r.top === a.top && r.left < a.left) : r.left < a.left || (r.left === a.left && r.top < a.top)) ? r : a,
+      );
+      const outX = first.right <= box.left || first.left >= box.right;
+      const outY = first.bottom <= box.top || first.top >= box.bottom;
+      scroller.scrollTo({
+        left: outX ? scroller.scrollLeft + first.left - box.left - (box.width - first.width) / 2 : scroller.scrollLeft,
+        top: outY ? scroller.scrollTop + first.top - box.top - (box.height - first.height) / 2 : scroller.scrollTop,
+        behavior: 'smooth',
+      });
+    }, 450);
+    return () => window.clearTimeout(t);
+  }, [highlightedProjectId, transposed]);
 
   const copyMarkdown = useCallback(async () => {
     const md = exportPlanMarkdown(state, cap, activeInitiatives, descopedInitiatives);
@@ -1243,6 +1271,7 @@ function PlanView({
               currentIterationId={currentIterationId}
               iterationToneById={iterationToneById}
               highlightedProjectId={highlightedProjectId}
+              belowLineProjectIds={belowLineProjectIds}
               toggleIterationCollapsed={toggleIterationCollapsed}
               renamePerson={renamePerson}
               movePerson={movePerson}
@@ -1271,6 +1300,7 @@ function PlanView({
               currentIterationId={currentIterationId}
               iterationToneById={iterationToneById}
               highlightedProjectId={highlightedProjectId}
+              belowLineProjectIds={belowLineProjectIds}
               toggleIterationCollapsed={toggleIterationCollapsed}
               renamePerson={renamePerson}
               movePerson={movePerson}
@@ -1952,6 +1982,7 @@ function Chart(props: {
   currentIterationId: ID | null;
   iterationToneById: Record<ID, IterationTone>;
   highlightedProjectId: ID | null;
+  belowLineProjectIds: Set<ID>;
   toggleIterationCollapsed: (id: ID) => void;
   renamePerson: (id: ID, name: string) => void;
   movePerson: (id: ID, dir: -1 | 1) => void;
@@ -2316,6 +2347,7 @@ function Chart(props: {
                       isCurrentWeek={tone === 'current'}
                       isPastWeek={tone === 'past'}
                       highlightedProjectId={props.highlightedProjectId}
+                      belowLineProjectIds={props.belowLineProjectIds}
                       extendPreviewProject={extendPreviewProject}
                       extendPreviewMilestone={inExtendPreview ? milestoneOf(extendPreviewProject, extending!.milestoneId) : undefined}
                       onAdd={pid => props.addAssignment(person.id, w.id, pid)}
@@ -2922,6 +2954,7 @@ function ChartTransposed(props: {
   currentIterationId: ID | null;
   iterationToneById: Record<ID, IterationTone>;
   highlightedProjectId: ID | null;
+  belowLineProjectIds: Set<ID>;
   toggleIterationCollapsed: (id: ID) => void;
   renamePerson: (id: ID, name: string) => void;
   movePerson: (id: ID, dir: -1 | 1) => void;
@@ -3353,6 +3386,7 @@ function ChartTransposed(props: {
                         isCurrentWeek={isCurrent}
                         isPastWeek={isPast}
                         highlightedProjectId={props.highlightedProjectId}
+                        belowLineProjectIds={props.belowLineProjectIds}
                         extendPreviewProject={extendPreviewProject}
                         extendPreviewMilestone={inExtendPreview ? milestoneOf(extendPreviewProject, extending!.milestoneId) : undefined}
                         onAdd={pid => props.addAssignment(person.id, w.id, pid)}
@@ -3424,6 +3458,7 @@ function Cell(props: {
   isPastWeek: boolean;
   rowAlt: boolean;
   highlightedProjectId: ID | null;
+  belowLineProjectIds: Set<ID>;
   extendPreviewProject?: Project;
   extendPreviewMilestone?: Milestone;
   onAdd: (projectId: ID) => void;
@@ -3574,6 +3609,7 @@ function Cell(props: {
                 isPto={isPto(a.projectId)}
                 isFR={isFR(a.projectId)}
                 isUnavailable={isUnavailable(a.projectId)}
+                belowLine={props.belowLineProjectIds.has(a.projectId)}
                 muted={props.isPastWeek || (props.highlightedProjectId != null && props.highlightedProjectId !== a.projectId)}
                 joinPrev={slot?.joinPrev}
                 joinNext={slot?.joinNext}
@@ -3656,6 +3692,7 @@ function AssignChip(props: {
   joinPrev?: boolean;
   joinNext?: boolean;
   vertical?: boolean;
+  belowLine?: boolean;
   onDragStart: (e: React.DragEvent) => void;
   onClick: (e: React.MouseEvent) => void;
   onRemove: () => void;
@@ -3701,6 +3738,7 @@ function AssignChip(props: {
       draggable
       onDragStart={props.onDragStart}
       onClick={props.onClick}
+      data-chip-project={project.id}
       title={
         pto
           ? 'PTO'
@@ -3711,7 +3749,8 @@ function AssignChip(props: {
           : project.name +
             (props.milestone ? ` · ${milestoneLabel(props.milestone)}` : '') +
             ((props.milestone?.url ?? project.url) ? `\nClick to open ${props.milestone?.url ?? project.url}` : '') +
-            (props.onOpenMilestones ? '\nUse ◆ to pick a milestone' : '')
+            (props.onOpenMilestones ? '\nUse ◆ to pick a milestone' : '') +
+            (props.belowLine ? '\nBelow the capacity line' : '')
       }
       className={
         baseClass +
@@ -3722,7 +3761,7 @@ function AssignChip(props: {
           ? 'border border-amber-400/70 bg-amber-100 uppercase tracking-[0.06em]'
           : unavail
           ? 'border border-ink-400/60 bg-ink-300 uppercase tracking-[0.06em]'
-          : 'chip-tint border shadow-[0_1px_2px_rgba(15,23,42,0.04)]') +
+          : 'chip-tint border shadow-[0_1px_2px_rgba(15,23,42,0.04)]' + (props.belowLine ? ' chip-below border-dashed' : '')) +
         ((props.milestone?.url ?? project.url) && !isSentinelChip ? ' cursor-pointer' : '')
       }
       style={mutedStyle}

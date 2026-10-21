@@ -195,3 +195,13 @@ body {
     var(--color-ink-300) 4px 8px
   );
 }
+
+/* Chips for projects below the capacity line: lighter fill, dashed edge */
+.chip-tint.chip-below {
+  background: color-mix(in srgb, var(--cc, #888) 22%, #ffffff);
+  border-color: color-mix(in srgb, var(--cc, #888) 75%, #64748b);
+}
+.dark .chip-tint.chip-below {
+  background: color-mix(in srgb, var(--cc-dark, #334155) 45%, transparent);
+  border-color: color-mix(in srgb, var(--cc-dark, #334155) 40%, #cbd5e1);
+}
