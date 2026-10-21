@@ -701,6 +701,53 @@ export function maxCreepForTarget(s: ScopeSummary, target: string): number | nul
   return s.pace.completionRate - s.remaining / weeksLeft;
 }
 
+export type TargetStatus = 'on-track' | 'at-risk' | 'late';
+
+const mondayOf = (ms: number) => {
+  const d = new Date(ms);
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  return d.getTime();
+};
+
+/** How unfinished work compares with its target date (YYYY-MM-DD), at the current creep rate.
+ *  Late once the target has passed, or when the forecast finishes after the target's week.
+ *  At risk when only some estimates miss, or it finishes a few days late in the same week.
+ *  Null when there's nothing to compare. */
+export function targetStatus(s: ScopeSummary, target: string | undefined): TargetStatus | null {
+  if (!target || s.status === 'done' || s.status === 'empty') return null;
+  if (parseDay(target) + DAY <= Date.parse(s.asOf)) return 'late';
+  if (s.status === 'not-started') return null;
+  const f = projectFinish(s, 1);
+  if (!f) return null;
+  const late = (p: Projection | null) => !p || !p.date || p.date > target;
+  if (f.isRange) return late(f.fastest) ? 'late' : late(f.slowest) ? 'at-risk' : 'on-track';
+  if (!late(f.central)) return 'on-track';
+  return f.central?.date && mondayOf(parseDay(f.central.date)) === mondayOf(parseDay(target)) ? 'at-risk' : 'late';
+}
+
+/** Changes with repeats per issue collapsed to the net change: a finish undone by a
+ *  reopen (or the reverse), or an add undone by a removal, drops both. Newest first. */
+export function netChanges(events: ScopeEvent[]): ScopeEvent[] {
+  const opposite = (a: ScopeEvent['kind'], b: ScopeEvent['kind']) =>
+    (a === 'completed' && b === 'reopened') || (a === 'reopened' && b === 'completed')
+    || (a === 'added' && b === 'removed') || (a === 'removed' && b === 'added');
+  const kept: (ScopeEvent | null)[] = [];
+  const byIssue = new Map<string, number[]>();
+  for (const e of [...events].reverse()) {
+    const mine = byIssue.get(e.issue.id) ?? [];
+    byIssue.set(e.issue.id, mine);
+    const prev = mine.length ? kept[mine[mine.length - 1]] : null;
+    if (prev && opposite(prev.kind, e.kind)) {
+      kept[mine.pop()!] = null;
+    } else {
+      mine.push(kept.length);
+      kept.push(e);
+    }
+  }
+  return kept.filter((e): e is ScopeEvent => e !== null).reverse();
+}
+
 /* ---------- GitHub history ---------- */
 
 export type HistoryEvent =

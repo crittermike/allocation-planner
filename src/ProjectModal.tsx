@@ -561,7 +561,11 @@ export function ProjectEditModal(props: {
           </label>
         </div>
         {tracked && props.slug && (
-          <div className={'min-w-0 border-t border-ink-100 px-5 py-5 lg:border-l lg:border-t-0' + (wide ? '' : ' hidden')}>
+          <div
+            className={'min-w-0 border-t border-ink-100 px-5 ' + (
+              wide ? 'py-5 lg:border-l lg:border-t-0' : scopeStatus === 'notice' ? 'py-3' : 'hidden'
+            )}
+          >
             <ScopePanel
               key={tracked.issue.url}
               slug={props.slug}
