@@ -3539,7 +3539,7 @@ function AssignChip(props: {
   const isSentinelChip = pto || fr || unavail;
   const ink = isSentinelChip ? 'var(--color-ink-700)' : undefined;
   const baseClass =
-    'group/chip relative inline-flex max-w-full min-w-0 cursor-grab items-center gap-1 rounded-md px-2.5 py-[3px] pr-3 text-left text-[11px] font-semibold leading-tight transition-transform active:cursor-grabbing hover:-translate-y-px';
+    'group/chip relative inline-flex max-w-full min-w-0 cursor-grab items-center gap-1 rounded-md px-2.5 py-[3px] pr-3 text-left text-[11px] font-semibold leading-tight transition-[filter] active:cursor-grabbing hover:brightness-95';
   const chipStyle: React.CSSProperties = isSentinelChip
     ? { color: ink }
     : ({
