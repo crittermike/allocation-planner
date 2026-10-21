@@ -12,6 +12,7 @@ import {
 } from './Capacity';
 import { deriveCapacity } from './capacityShared';
 import { ColorPopover, ProjectEditModal } from './ProjectModal';
+import { LoadError, OfflineBanner } from './ConnectionStatus';
 import {
   milestoneLabel,
   milestoneOf,
@@ -306,6 +307,8 @@ export default function Plan({ slug, projectId }: { slug: string; projectId?: st
     passwordRequired,
     planName,
     hasPassword,
+    loadFailed,
+    retryLoad,
     submitPassword,
     changePassword,
   } = usePlan(slug);
@@ -333,6 +336,8 @@ export default function Plan({ slug, projectId }: { slug: string; projectId?: st
     return <UnlockPrompt slug={slug} name={planName} onSubmit={submitPassword} />;
   }
 
+  if (loadFailed && !liveState) return <LoadError onRetry={retryLoad} />;
+
   if (!liveState) {
     return (
       <div className="flex h-screen w-screen items-center justify-center text-[13px] text-ink-500">
@@ -342,16 +347,19 @@ export default function Plan({ slug, projectId }: { slug: string; projectId?: st
   }
 
   return (
-    <PlanView
-      slug={slug}
-      initialProjectId={projectId}
-      state={liveState}
-      setState={setLiveState}
-      conn={conn}
-      peers={peers}
-      hasPassword={hasPassword}
-      changePassword={changePassword}
-    />
+    <>
+      <PlanView
+        slug={slug}
+        initialProjectId={projectId}
+        state={liveState}
+        setState={setLiveState}
+        conn={conn}
+        peers={peers}
+        hasPassword={hasPassword}
+        changePassword={changePassword}
+      />
+      <OfflineBanner conn={conn} />
+    </>
   );
 }
 

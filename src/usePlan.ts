@@ -42,6 +42,10 @@ export type UsePlan = {
   planName: string | null;
   /** Whether this plan currently has a password set. */
   hasPassword: boolean;
+  /** True when the initial plan load failed (network or server error). */
+  loadFailed: boolean;
+  /** Try the initial load again after a failure. */
+  retryLoad: () => void;
   /** Submit a password to unlock the plan. */
   submitPassword: (password: string) => Promise<{ ok: true } | { ok: false; error: PasswordError; message?: string }>;
   /** Set / change / clear (newPassword === null) the plan password. */
@@ -76,6 +80,7 @@ export function usePlan(slug: string | null): UsePlan {
   const [passwordRequired, setPasswordRequired] = useState(false);
   const [planName, setPlanName] = useState<string | null>(null);
   const [hasPassword, setHasPassword] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const pendingRef = useRef<PlanState | null>(null);
   // Set once the server's hello arrives. Edits sent earlier would be overwritten by that hello.
@@ -229,8 +234,7 @@ export function usePlan(slug: string | null): UsePlan {
         openWs();
       } catch {
         if (stopped) return;
-        // Try opening WS anyway; it may succeed if the server comes up.
-        openWs();
+        setLoadFailed(true);
       }
     };
 
@@ -255,10 +259,22 @@ export function usePlan(slug: string | null): UsePlan {
   }, [slug, reloadKey]);
 
   useEffect(() => {
-    const handler = () => flush();
+    const handler = (e: BeforeUnloadEvent) => {
+      flush();
+      // Still unsent means we're offline; warn before those edits are lost.
+      if (pendingRef.current) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
     window.addEventListener('beforeunload', handler);
     return () => window.removeEventListener('beforeunload', handler);
   }, [flush]);
+
+  const retryLoad = useCallback(() => {
+    setLoadFailed(false);
+    setReloadKey(k => k + 1);
+  }, []);
 
   const submitPassword = useCallback(
     async (password: string) => {
@@ -345,6 +361,8 @@ export function usePlan(slug: string | null): UsePlan {
     passwordRequired,
     planName,
     hasPassword,
+    loadFailed,
+    retryLoad,
     submitPassword,
     changePassword,
   };
