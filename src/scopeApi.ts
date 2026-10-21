@@ -60,6 +60,23 @@ export type ScopeResponse =
   | { status: 'unreadable'; at: string }
   | { status: 'error'; message: string; code?: number; refreshing?: boolean };
 
+/** Last response per plan and issue, shared by the project editor and the Releases row. */
+const responses = new Map<string, ScopeResponse>();
+const listeners = new Set<() => void>();
+const responseKey = (slug: string, url: string) => `${slug}\n${url}`;
+
+export const lastScope = (slug: string, url: string) => responses.get(responseKey(slug, url));
+
+export function storeScope(slug: string, url: string, res: ScopeResponse) {
+  responses.set(responseKey(slug, url), res);
+  listeners.forEach(l => l());
+}
+
+export function onScopeStored(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
 const SERVER_ERRORS: Record<number, string> = {
   401: 'Unlock this plan to see scope.',
   403: "This plan doesn't link to that issue, or the planner isn't allowed to read its repo.",

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { scheduledReleases, syncGitHubMilestones } from '../src/milestones.ts';
+import { releasesByWeek, scheduledReleases, syncGitHubMilestones } from '../src/milestones.ts';
 
 const ids = () => { let n = 0; return () => `new${++n}`; };
 const A = { name: 'Alpha', url: 'https://github.com/o/r/issues/1' };
@@ -57,4 +57,15 @@ test('hides a project release when one of its milestones ships the same day', ()
   });
   assert.deepEqual(scheduledReleases([project('2026-11-27')]).map(r => r.key), ['p:m1', 'p:m2']);
   assert.deepEqual(scheduledReleases([project('2026-11-30')]).map(r => r.key), ['p:m1', 'p:m2', 'p']);
+});
+
+test('releasesByWeek attaches each release card forecast by key', () => {
+  const project = {
+    id: 'p', name: 'P', color: '#fff', driId: null, releaseDate: '2026-11-30',
+    milestones: [{ id: 'm1', name: 'M1', releaseDate: '2026-11-26' }],
+  };
+  const late = { status: 'late' as const, finishWeek: '2027-03-22' };
+  const byWeek = releasesByWeek([project], [{ id: 'w1', startDate: '2026-11-23' }, { id: 'w2', startDate: '2026-11-30' }], new Map([['p:m1', late]]));
+  assert.deepEqual(byWeek.w1.map(r => r.forecast), [late]);
+  assert.deepEqual(byWeek.w2.map(r => r.forecast), [undefined]);
 });
