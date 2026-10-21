@@ -22,11 +22,7 @@ const INK_BY_BG: Record<string, string> = {
 };
 const inkFor = (bg: string) => INK_BY_BG[bg.toLowerCase()] ?? '#1e293b';
 
-const fmtWk = (n: number): string => {
-  if (Number.isInteger(n)) return `${n}`;
-  const r = Math.round(n * 100) / 100;
-  return r % 1 === 0 ? `${r}` : parseFloat(r.toFixed(2)).toString();
-};
+const fmtWk = (n: number): string => `${Math.round(n * 10) / 10}`;
 
 export function ReleaseDatePicker({ value, name, onChange, title = "The date you've communicated this project will ship", compact }: {
   value: string | undefined;

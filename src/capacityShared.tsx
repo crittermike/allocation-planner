@@ -101,7 +101,7 @@ export function deriveCapacity(state: PlanState): CapacityInfo {
 }
 
 /** Format an EM/week number for compact display. */
-export function fmtNum(n: number, maxDecimals = 2): string {
+export function fmtNum(n: number, maxDecimals = 1): string {
   if (!Number.isFinite(n)) return '—';
   const rounded = Math.round(n * Math.pow(10, maxDecimals)) / Math.pow(10, maxDecimals);
   if (Number.isInteger(rounded)) return `${rounded}`;

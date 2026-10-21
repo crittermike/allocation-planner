@@ -87,13 +87,8 @@ function darkBgFor(bg: string): string {
 
 const uid = () => Math.random().toString(36).slice(2, 10);
 
-/** Format a fractional eng-week number for display (e.g. 3, 1.5, 2.33) */
-const fmtWk = (n: number): string => {
-  if (Number.isInteger(n)) return `${n}`;
-  const r = Math.round(n * 100) / 100;
-  // Remove trailing zeros: 1.50 → 1.5, 2.00 → 2
-  return r % 1 === 0 ? `${r}` : parseFloat(r.toFixed(2)).toString();
-};
+/** Format an EM number for display, to one decimal (e.g. 3, 1.5, 2.1) */
+const fmtWk = (n: number): string => `${Math.round(n * 10) / 10}`;
 
 /* ---------- PTO sentinel ----------
  * PTO is an assignment kind that isn't a project. We model it by reserving a
@@ -1334,7 +1329,7 @@ function PlanView({
               </>
             )}
           </div>
-          {!panel.collapsed && (
+          {!panel.collapsed && activeInitiatives.length > 0 && (
             <div className="shrink-0 border-b border-ink-100 px-5 py-2.5">
               <CapacityBars
                 info={cap}
