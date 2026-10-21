@@ -1606,7 +1606,7 @@ function OverflowMenu(props: { items: OverflowItem[] }) {
                 key={i}
                 type="button"
                 title={item.title}
-                onClick={() => { setOpen(false); item.onClick?.(); }}
+                onClick={() => { setOpen(false); btnRef.current?.focus(); item.onClick?.(); }}
                 className={
                   'flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-[13px] transition ' +
                   (item.danger

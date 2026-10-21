@@ -30,15 +30,21 @@ export function Home() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [visited, setVisited] = useState(() => getVisited());
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let alive = true;
+    setLoadFailed(false);
     fetch('/api/plans')
-      .then(r => r.json())
+      .then(r => {
+        if (!r.ok) throw new Error(String(r.status));
+        return r.json();
+      })
       .then(data => { if (alive) setPlans(data); })
-      .catch(() => { if (alive) setPlans([]); });
+      .catch(() => { if (alive) setLoadFailed(true); });
     return () => { alive = false; };
-  }, []);
+  }, [reloadKey]);
 
   const myPlans = useMemo(() => {
     if (!plans) return null;
@@ -88,9 +94,6 @@ export function Home() {
           <h1 className="text-[28px] font-semibold tracking-tight text-ink-900">
             Allocation Planner
           </h1>
-          <p className="mt-1.5 text-[14px] text-ink-500">
-            Lightweight team allocation charts. Live-synced — share the URL with your team.
-          </p>
         </header>
 
         <section className="rounded-2xl border border-ink-200 bg-white p-6 shadow-[0_1px_2px_rgba(15,23,42,0.04),0_8px_24px_-12px_rgba(15,23,42,0.08)]">
@@ -131,7 +134,19 @@ export function Home() {
             Recent plans
           </h2>
           <div className="overflow-hidden rounded-2xl border border-ink-200 bg-white shadow-sm">
-            {plans === null && (
+            {plans === null && loadFailed && (
+              <div className="flex items-center justify-center gap-3 px-5 py-6 text-[13px] text-rose-600">
+                Couldn't load plans.
+                <button
+                  type="button"
+                  onClick={() => setReloadKey(k => k + 1)}
+                  className="rounded-md border border-ink-200 px-2.5 py-1 font-medium text-ink-700 transition hover:bg-ink-50"
+                >
+                  Retry
+                </button>
+              </div>
+            )}
+            {plans === null && !loadFailed && (
               <div className="px-5 py-6 text-center text-[13px] text-ink-500">Loading…</div>
             )}
             {myPlans && myPlans.length === 0 && (
@@ -160,10 +175,6 @@ export function Home() {
             )}
           </div>
         </section>
-
-        <footer className="mt-auto pt-6 text-center text-[11px] text-ink-400">
-          Anyone with the link can view and edit. No login required.
-        </footer>
       </div>
     </div>
   );
