@@ -195,3 +195,8 @@ body {
     var(--color-ink-300) 4px 8px
   );
 }
+
+/* A continued bar segment shows its label only when the bar's start is scrolled out of view. */
+[data-run-cont]:not([data-show-label]) > .run-label {
+  visibility: hidden;
+}

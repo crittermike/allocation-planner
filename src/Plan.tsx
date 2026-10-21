@@ -29,6 +29,7 @@ import type { TargetStatus } from './scope';
 import { UndoToast } from './Toast';
 import { canUndoToast, type UndoToast as UndoToastState } from './undoToast';
 import { layoutRuns, type PersonLanes, type RunLayout, type RunSlot } from './runs';
+import { currentWeekId as findCurrentWeekId } from './weeks';
 
 type ID = string;
 
@@ -512,6 +513,10 @@ function PlanView({
   const currentIterationId = useMemo<ID | null>(
     () => state.iterations.find(iter => iterationToneById[iter.id] === 'current')?.id ?? null,
     [iterationToneById, state.iterations],
+  );
+  const currentWeekId = useMemo(
+    () => findCurrentWeekId(allWeeks, toISODate(startOfToday())),
+    [allWeeks],
   );
   const cap = useMemo(() => deriveCapacity(state), [state]);
   const plannedByProject = cap.plannedByProject;
@@ -1088,6 +1093,7 @@ function PlanView({
     // re-trigger auto-scroll on layout swap
     lastScrolledIterRef.current = null;
   }, [transposed]);
+  useRunLabelReveal(chartScrollRef, transposed);
 
   useEffect(() => {
     if (!currentIterationId) return;
@@ -1241,6 +1247,7 @@ function PlanView({
               onEditProject={editProject}
               collapsedIterationIds={collapsedIterationIds}
               currentIterationId={currentIterationId}
+              currentWeekId={currentWeekId}
               iterationToneById={iterationToneById}
               highlightedProjectId={highlightedProjectId}
               toggleIterationCollapsed={toggleIterationCollapsed}
@@ -1269,6 +1276,7 @@ function PlanView({
               onEditProject={editProject}
               collapsedIterationIds={collapsedIterationIds}
               currentIterationId={currentIterationId}
+              currentWeekId={currentWeekId}
               iterationToneById={iterationToneById}
               highlightedProjectId={highlightedProjectId}
               toggleIterationCollapsed={toggleIterationCollapsed}
@@ -1919,7 +1927,47 @@ function IterationGoal(props: {
   );
 }
 
-/** Iteration header controls stay hidden until the header is hovered or focused. */
+/** A bar's label sits on its first week. When that week is scrolled behind the
+ *  frozen headers, show the label on the week at the edge instead. */
+function useRunLabelReveal(scrollRef: React.RefObject<HTMLElement | null>, vertical: boolean) {
+  useEffect(() => {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    let frame = 0;
+    const update = () => {
+      frame = 0;
+      const corner = scroller.querySelector('[data-chart-corner]');
+      if (!corner) return;
+      const box = corner.getBoundingClientRect();
+      const edge = vertical ? box.bottom : box.right;
+      scroller.querySelectorAll<HTMLElement>('[data-run-cont]').forEach(el => {
+        // Label the segment whose cell holds the first readable stretch of
+        // the bar past the sticky corner.
+        const r = (el.closest('td') ?? el).getBoundingClientRect();
+        const line = edge + (vertical ? 24 : 48);
+        el.toggleAttribute(
+          'data-show-label',
+          vertical ? r.top < line && r.bottom > line : r.left < line && r.right > line,
+        );
+      });
+    };
+    const schedule = () => {
+      if (!frame) frame = requestAnimationFrame(update);
+    };
+    schedule();
+    scroller.addEventListener('scroll', schedule, { passive: true });
+    window.addEventListener('resize', schedule);
+    const observer = new MutationObserver(schedule);
+    observer.observe(scroller, { childList: true, subtree: true });
+    return () => {
+      cancelAnimationFrame(frame);
+      scroller.removeEventListener('scroll', schedule);
+      window.removeEventListener('resize', schedule);
+      observer.disconnect();
+    };
+  }, [scrollRef, vertical]);
+}
+
 /** Lane layout for drawing consecutive weeks of the same work as one bar. */
 function useRunLayout(
   assignments: Assignment[],
@@ -1950,6 +1998,7 @@ function Chart(props: {
   onEditProject: (id: ID) => void;
   collapsedIterationIds: Set<ID>;
   currentIterationId: ID | null;
+  currentWeekId: string | null;
   iterationToneById: Record<ID, IterationTone>;
   highlightedProjectId: ID | null;
   toggleIterationCollapsed: (id: ID) => void;
@@ -2057,6 +2106,7 @@ function Chart(props: {
           <tr>
             <th
               rowSpan={2}
+              data-chart-corner
               className="sticky left-0 top-0 z-30 w-[128px] min-w-[128px] border-b border-r-2 border-ink-200 border-r-ink-300 bg-ink-50 pl-5 pr-2 py-3 text-left align-bottom text-[10.5px] font-semibold uppercase tracking-[0.08em] text-ink-500 sm:w-[200px] sm:min-w-[200px]"
             >
               <div className="flex items-center justify-between gap-2">
@@ -2208,12 +2258,17 @@ function Chart(props: {
               }
               return weeks.map((w, weekIdx) => {
                 const isIterEnd = weekIdx === weeks.length - 1;
+                const isToday = w.id === props.currentWeekId;
                 return (
                   <th
                     key={w.id}
+                    aria-current={isToday ? 'date' : undefined}
+                    title={isToday ? 'This week' : undefined}
                     className={
-                      'sticky top-9 z-20 h-8 min-w-[160px] border-b px-2 text-center text-[11px] font-medium tabular-nums ' +
-                      weekToneClass +
+                      'sticky top-9 z-20 h-8 min-w-[160px] border-b px-2 text-center text-[11px] tabular-nums ' +
+                      (isToday
+                        ? 'border-amber-300 bg-amber-100 font-semibold text-amber-800 shadow-[inset_0_-2px_0_var(--color-amber-500)]'
+                        : 'font-medium ' + weekToneClass) +
                       ' border-r ' +
                       (isIterEnd
                         ? (isCurrent ? 'border-r-2 border-r-amber-400/70' : 'border-r-2 border-r-ink-300')
@@ -2226,6 +2281,33 @@ function Chart(props: {
               });
             })}
           </tr>
+          {hasReleases && (
+            <tr>
+              <th
+                scope="row"
+                className="sticky left-0 z-30 w-[128px] min-w-[128px] border-b border-r-2 border-ink-200 border-r-ink-300 bg-ink-50 pl-5 pr-2 py-1 text-left align-middle text-[10.5px] font-semibold uppercase tracking-[0.08em] text-ink-500 sm:w-[200px] sm:min-w-[200px]"
+              >
+                Releases
+              </th>
+              {iterationRows.flatMap(({ iter, tone, isCollapsed, weeks }) => {
+                const cells = isCollapsed
+                  ? [{ id: iter.id, releases: weeks.flatMap(w => props.releasesByWeek[w.id] ?? []) }]
+                  : weeks.map(w => ({ id: w.id, releases: props.releasesByWeek[w.id] ?? [] }));
+                return cells.map((cell, index) => (
+                  <th
+                    key={cell.id}
+                    className={
+                      'max-w-0 border-b border-r border-ink-200 px-1.5 py-1 align-top font-normal ' +
+                      (tone === 'current' ? 'bg-amber-50' : 'bg-ink-50') +
+                      (index === cells.length - 1 ? ' border-r-2 border-r-ink-300' : '')
+                    }
+                  >
+                    <WeekReleases releases={cell.releases} onEdit={props.onEditProject} />
+                  </th>
+                ));
+              })}
+            </tr>
+          )}
         </thead>
         <tbody>
           {state.people.map((person, rowIdx) => (
@@ -2314,6 +2396,7 @@ function Chart(props: {
                       isDri={isDri}
                       isIterEnd={weekIdx === weeks.length - 1}
                       isCurrentWeek={tone === 'current'}
+                      isToday={w.id === props.currentWeekId}
                       isPastWeek={tone === 'past'}
                       highlightedProjectId={props.highlightedProjectId}
                       extendPreviewProject={extendPreviewProject}
@@ -2332,34 +2415,6 @@ function Chart(props: {
               })}
             </tr>
           ))}
-          {hasReleases && (
-            <tr>
-              <th
-                scope="row"
-                className="sticky left-0 z-10 w-[128px] min-w-[128px] border-t-2 border-b border-r-2 border-ink-200 border-r-ink-300 bg-ink-50 px-5 py-2 text-left align-middle text-[10.5px] font-semibold uppercase tracking-[0.08em] text-ink-500 sm:w-[200px] sm:min-w-[200px]"
-                title="Communicated ship dates"
-              >
-                Releases
-              </th>
-              {iterationRows.flatMap(({ iter, tone, isCollapsed, weeks }) => {
-                const cells = isCollapsed
-                  ? [{ id: iter.id, releases: weeks.flatMap(w => props.releasesByWeek[w.id] ?? []) }]
-                  : weeks.map(w => ({ id: w.id, releases: props.releasesByWeek[w.id] ?? [] }));
-                return cells.map((cell, index) => (
-                  <td
-                    key={cell.id}
-                    className={
-                      'border-t-2 border-b border-r border-ink-200 p-1 align-top ' +
-                      (tone === 'current' ? 'bg-amber-50/40' : tone === 'past' ? 'bg-ink-50/70' : 'bg-white') +
-                      (index === cells.length - 1 ? ' border-r-2 border-r-ink-300' : '')
-                    }
-                  >
-                    <WeekReleases releases={cell.releases} onEdit={props.onEditProject} />
-                  </td>
-                ));
-              })}
-            </tr>
-          )}
           <tr className="group/notesrow">
             <td
               className="sticky left-0 z-10 w-[128px] min-w-[128px] border-t-2 border-b border-r-2 border-ink-200 border-r-ink-300 bg-ink-50 px-5 py-2 align-middle text-[10.5px] font-semibold uppercase tracking-[0.08em] text-ink-500 sm:w-[200px] sm:min-w-[200px]"
@@ -2542,75 +2597,56 @@ const FORECAST_DOT: Record<TargetStatus, string> = {
   late: 'bg-rose-600',
 };
 
-function WeekReleases({ releases, onEdit, showHeading = false }: {
+/** Compact one-line release markers that sit with the week labels. */
+function WeekReleases({ releases, onEdit }: {
   releases: ScheduledRelease[];
   onEdit: (id: ID) => void;
-  showHeading?: boolean;
 }) {
   if (releases.length === 0) return null;
   return (
-    <div className="p-1">
-      {showHeading && (
-        <div className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-ink-500">Releases</div>
-      )}
-      <ul aria-label="Scheduled releases" className="space-y-1">
-        {releases.map(({ key, project, milestone, releaseDate, forecast }) => {
-          const date = parseISODate(releaseDate);
-          const fullDate = date.toLocaleDateString('en-US', { dateStyle: 'full' });
-          const projectName = project.name || 'Untitled project';
-          const name = milestone ? `${projectName} · ${milestoneLabel(milestone)}` : projectName;
-          const day = (iso: string) => parseISODate(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-          const finish = forecast?.finishWeek
-            ? `${day(forecast.finishWeek)}${forecast.finishWeekEnd ? `–${day(forecast.finishWeekEnd).replace(/^[A-Za-z]+ /, '')}` : ''}`
-            : null;
-          const forecastText = forecast
-            ? `${FORECAST_LABEL[forecast.status]}${finish
-              ? `, forecast to finish the week of ${finish}`
-              : forecast.status === 'late' && releaseDate >= toISODate(startOfToday()) ? ', no finish in sight at the current pace' : ''}`
-            : '';
-          return (
-            <li key={key}>
-              <button
-                type="button"
-                onClick={e => { e.stopPropagation(); onEdit(project.id); }}
-                title={`${name}\n${milestone ? 'Milestone ship date' : 'Communicated release'}: ${fullDate}${forecast ? `\nScope: ${forecastText}` : ''}\nClick to edit project`}
-                aria-label={`${name} ${milestone ? 'milestone ships' : 'releases'} ${fullDate}${forecast ? `; ${forecastText}` : ''}; edit project`}
-                className="chip-tint flex w-full max-w-[240px] items-center gap-2 rounded-md border px-2 py-1.5 text-left transition-shadow hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-400"
-                style={{
-                  ['--cc' as string]: project.color,
-                  ['--cc-dark' as string]: darkBgFor(project.color),
-                }}
-              >
-                <svg width="13" height="14" viewBox="0 0 14 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" className="shrink-0" aria-hidden>
-                  <path d="M7 1.5C4.5 3.5 4 6 4 10.5h6C10 6 9.5 3.5 7 1.5Z" />
-                  <path d="m4 7-2.5 3v3L4 11m6-4 2.5 3v3L10 11M5.5 13 7 15l1.5-2" />
-                  <circle cx="7" cy="6.5" r="1.1" />
-                </svg>
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[11px] font-semibold leading-snug">{projectName}</span>
-                  {milestone && (
-                    <span className="flex min-w-0 items-center gap-1 text-[10px] font-medium leading-snug">
-                      <span className="inline-block h-1.5 w-1.5 shrink-0 rotate-45 rounded-[1px] bg-current opacity-70" aria-hidden />
-                      <span className="truncate">{milestoneLabel(milestone)}</span>
-                    </span>
-                  )}
-                  <span className="flex items-center gap-1.5 text-[10px] leading-snug tabular-nums">
-                    <time dateTime={releaseDate}>
-                      {date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
-                    </time>
-                    {forecast && (forecast.status === 'late' && finish ? (
-                      <span className="rounded-sm bg-rose-600 px-1 font-semibold text-[#fff]" aria-hidden>→ {finish}</span>
-                    ) : (
-                      <span className={`h-2 w-2 shrink-0 rounded-full ring-1 ring-white/80 ${FORECAST_DOT[forecast.status]}`} aria-hidden />
-                    ))}
-                  </span>
-                </span>
-              </button>
-            </li>
-          );
-        })}
-      </ul>
-    </div>
+    <ul aria-label="Scheduled releases" className="flex flex-col gap-0.5">
+      {releases.map(({ key, project, milestone, releaseDate, forecast }) => {
+        const date = parseISODate(releaseDate);
+        const fullDate = date.toLocaleDateString('en-US', { dateStyle: 'full' });
+        const projectName = project.name || 'Untitled project';
+        const name = milestone ? `${projectName} · ${milestoneLabel(milestone)}` : projectName;
+        const day = (iso: string) => parseISODate(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        const finish = forecast?.finishWeek
+          ? `${day(forecast.finishWeek)}${forecast.finishWeekEnd ? `–${day(forecast.finishWeekEnd).replace(/^[A-Za-z]+ /, '')}` : ''}`
+          : null;
+        const forecastText = forecast
+          ? `${FORECAST_LABEL[forecast.status]}${finish
+            ? `, forecast to finish the week of ${finish}`
+            : forecast.status === 'late' && releaseDate >= toISODate(startOfToday()) ? ', no finish in sight at the current pace' : ''}`
+          : '';
+        return (
+          <li key={key} className="min-w-0">
+            <button
+              type="button"
+              onClick={e => { e.stopPropagation(); onEdit(project.id); }}
+              title={`${name}\n${milestone ? 'Milestone ship date' : 'Communicated release'}: ${fullDate}${forecast ? `\nScope: ${forecastText}` : ''}\nClick to edit project`}
+              aria-label={`${name} ${milestone ? 'milestone ships' : 'releases'} ${fullDate}${forecast ? `; ${forecastText}` : ''}; edit project`}
+              className="chip-tint flex w-full min-w-0 items-center gap-1 rounded border px-1.5 py-px text-left text-[10.5px] font-medium normal-case leading-4 tracking-normal transition-[filter] hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-400"
+              style={{
+                ['--cc' as string]: project.color,
+                ['--cc-dark' as string]: darkBgFor(project.color),
+              }}
+            >
+              <svg width="10" height="11" viewBox="0 0 14 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" className="shrink-0" aria-hidden>
+                <path d="M7 1.5C4.5 3.5 4 6 4 10.5h6C10 6 9.5 3.5 7 1.5Z" />
+                <path d="m4 7-2.5 3v3L4 11m6-4 2.5 3v3L10 11M5.5 13 7 15l1.5-2" />
+              </svg>
+              <span className="min-w-0 flex-1 truncate">{name}</span>
+              {forecast && (forecast.status === 'late' && finish ? (
+                <span className="shrink-0 rounded-sm bg-rose-600 px-1 text-[9.5px] font-semibold tabular-nums text-[#fff]" aria-hidden>→ {finish}</span>
+              ) : (
+                <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${FORECAST_DOT[forecast.status]}`} aria-hidden />
+              ))}
+            </button>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -2619,7 +2655,6 @@ function CollapsedNotesCell(props: {
   topBorder?: boolean;
   onExpand: () => void;
   notes: string[];
-  children?: React.ReactNode;
 }) {
   const bg =
     props.tone === 'current'
@@ -2651,7 +2686,6 @@ function CollapsedNotesCell(props: {
         }}
         aria-hidden
       />
-      {props.children}
       <div className="relative flex h-full w-full items-center gap-1.5 px-2.5">
         {hasNotes ? (
           <>
@@ -2920,6 +2954,7 @@ function ChartTransposed(props: {
   onEditProject: (id: ID) => void;
   collapsedIterationIds: Set<ID>;
   currentIterationId: ID | null;
+  currentWeekId: string | null;
   iterationToneById: Record<ID, IterationTone>;
   highlightedProjectId: ID | null;
   toggleIterationCollapsed: (id: ID) => void;
@@ -3011,6 +3046,7 @@ function ChartTransposed(props: {
     <div
       className={
         'inline-block min-w-full overflow-clip rounded-2xl border border-ink-200 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04),0_8px_24px_-12px_rgba(15,23,42,0.08)] [--iteration-column-width:92px] [--week-column-width:80px] sm:[--iteration-column-width:140px] sm:[--week-column-width:96px]' +
+        (hasReleases ? ' [--week-column-width:120px] sm:[--week-column-width:150px]' : '') +
         (extending ? ' select-none' : '')
       }
     >
@@ -3019,6 +3055,7 @@ function ChartTransposed(props: {
           <tr>
             {/* corner: iteration col */}
             <th
+              data-chart-corner
               style={{ left: 0, width: ITER_W, minWidth: ITER_W }}
               className="sticky top-0 z-30 h-9 border-b border-r border-ink-200 bg-ink-50 px-2 py-2 text-left align-middle text-[10.5px] font-semibold uppercase tracking-[0.08em] text-ink-500"
             >
@@ -3086,7 +3123,7 @@ function ChartTransposed(props: {
             </th>
             {/* Notes col */}
             <th className="sticky top-0 z-20 h-9 w-[220px] min-w-[180px] border-b border-ink-200 bg-ink-50 px-3 align-middle text-left text-[10.5px] font-semibold uppercase tracking-[0.08em] text-ink-500">
-              {hasReleases ? 'Releases & notes' : 'Notes'}
+              Notes
             </th>
           </tr>
         </thead>
@@ -3271,6 +3308,14 @@ function ChartTransposed(props: {
                     title={`Expand iteration (${iterationDateRange(iter)})`}
                   >
                     <span className="opacity-80">{iterationDateRange(iter)}</span>
+                    {hasReleases && (
+                      <div className="mt-1">
+                        <WeekReleases
+                          releases={weeks.flatMap(w => props.releasesByWeek[w.id] ?? [])}
+                          onEdit={props.onEditProject}
+                        />
+                      </div>
+                    )}
                   </td>
                   {state.people.map((person, colIdx) => (
                     <CollapsedIterationCell
@@ -3288,13 +3333,7 @@ function ChartTransposed(props: {
                     tone={tone}
                     onExpand={() => props.toggleIterationCollapsed(iter.id)}
                     notes={collectIterationNotes(state.weekNotes, weeks)}
-                  >
-                    <WeekReleases
-                      releases={weeks.flatMap(w => props.releasesByWeek[w.id] ?? [])}
-                      onEdit={props.onEditProject}
-                      showHeading
-                    />
-                  </CollapsedNotesCell>
+                  />
                 </tr>
               );
             }
@@ -3318,12 +3357,21 @@ function ChartTransposed(props: {
                   )}
                   <td
                     style={{ left: ITER_W, width: WEEK_W, minWidth: WEEK_W }}
+                    aria-current={w.id === props.currentWeekId ? 'date' : undefined}
+                    title={w.id === props.currentWeekId ? 'This week' : undefined}
                     className={
-                      'sticky z-10 border-b border-r border-ink-200 px-2 py-2 align-middle text-[11px] font-medium tabular-nums ' +
-                      weekBg
+                      'sticky z-10 border-b border-r border-ink-200 px-2 py-2 align-middle text-[11px] tabular-nums ' +
+                      (w.id === props.currentWeekId
+                        ? 'bg-amber-100 font-semibold text-amber-800 shadow-[inset_3px_0_0_var(--color-amber-500)]'
+                        : 'font-medium ' + weekBg)
                     }
                   >
                     {w.label}
+                    {hasReleases && (
+                      <div className="mt-1">
+                        <WeekReleases releases={props.releasesByWeek[w.id] ?? []} onEdit={props.onEditProject} />
+                      </div>
+                    )}
                   </td>
                   {state.people.map((person, colIdx) => {
                     const cellAssigns = state.assignments.filter(
@@ -3351,6 +3399,7 @@ function ChartTransposed(props: {
                         isDri={isDri}
                         isIterEnd={false}
                         isCurrentWeek={isCurrent}
+                        isToday={w.id === props.currentWeekId}
                         isPastWeek={isPast}
                         highlightedProjectId={props.highlightedProjectId}
                         extendPreviewProject={extendPreviewProject}
@@ -3376,11 +3425,6 @@ function ChartTransposed(props: {
                       (isCurrent ? 'bg-amber-50/40' : isPast ? 'bg-ink-50/70' : 'bg-white')
                     }
                   >
-                    <WeekReleases
-                      releases={props.releasesByWeek[w.id] ?? []}
-                      onEdit={props.onEditProject}
-                      showHeading
-                    />
                     <WeekNoteTextarea
                       value={state.weekNotes?.[w.id] ?? ''}
                       onChange={text => props.setWeekNote(w.id, text)}
@@ -3421,6 +3465,7 @@ function Cell(props: {
   isDri: boolean;
   isIterEnd: boolean;
   isCurrentWeek: boolean;
+  isToday?: boolean;
   isPastWeek: boolean;
   rowAlt: boolean;
   highlightedProjectId: ID | null;
@@ -3464,6 +3509,8 @@ function Cell(props: {
 
   const baseBg = hasUnavailable
     ? 'pattern-stripe-soft'
+    : props.isToday
+    ? (props.rowAlt ? 'bg-amber-100/70 hover:bg-amber-100' : 'bg-amber-100/50 hover:bg-amber-100')
     : props.isCurrentWeek
     ? (props.rowAlt ? 'bg-amber-50/80 hover:bg-amber-50' : 'bg-amber-50/40 hover:bg-amber-50')
     : props.isPastWeek
@@ -3665,12 +3712,13 @@ function AssignChip(props: {
   const isSentinelChip = pto || fr || unavail;
   const ink = isSentinelChip ? 'var(--color-ink-700)' : undefined;
   const joined = !!(joinPrev || joinNext);
+  const twoLine = !!props.milestone && !isSentinelChip;
   // Joined segments reach past the cell padding so a run reads as one bar.
   const runClass = vertical
     ? (joined ? ' flex-1 self-stretch !items-start' : ' self-start') +
       (joinPrev ? ' rounded-t-none border-t-0' : '') +
       (joinNext ? ' rounded-b-none border-b-0' : '')
-    : ' h-full' +
+    : (twoLine ? ' h-full' : ' h-[22px]') +
       (joinPrev ? ' rounded-l-none border-l-0' : '') +
       (joinNext ? ' rounded-r-none border-r-0' : '');
   const runStyle: React.CSSProperties = vertical
@@ -3700,6 +3748,7 @@ function AssignChip(props: {
     <span
       draggable
       onDragStart={props.onDragStart}
+      data-run-cont={joinPrev || undefined}
       onClick={props.onClick}
       title={
         pto
@@ -3727,9 +3776,14 @@ function AssignChip(props: {
       }
       style={mutedStyle}
     >
-      {joinPrev ? (
-        <span className="min-w-0 flex-1" aria-hidden />
-      ) : pto ? (
+      <span
+        className={
+          'run-label flex min-w-0 items-center gap-1' +
+          (joined ? (vertical ? ' sticky top-10 self-start' : ' sticky left-[136px] sm:left-[208px]') : '')
+        }
+        aria-hidden={joinPrev || undefined}
+      >
+      {pto ? (
         <span className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center text-[10px]" aria-hidden>
           ☀
         </span>
@@ -3742,7 +3796,7 @@ function AssignChip(props: {
           ∅
         </span>
       ) : null}
-      {joinPrev ? null : props.milestone && !isSentinelChip ? (
+      {twoLine && props.milestone ? (
         <span className="flex min-w-0 flex-col leading-tight">
           <span className="truncate">{project.name}</span>
           <span className="flex min-w-0 items-center gap-1 text-[10px] font-medium opacity-80">
@@ -3755,6 +3809,8 @@ function AssignChip(props: {
           {fr ? 'FR' : project.name}
         </span>
       )}
+      </span>
+      {joinPrev && <span className="flex-1" aria-hidden />}
       {props.onOpenMilestones && !isSentinelChip && (
         <button
           type="button"
