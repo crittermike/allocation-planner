@@ -2640,6 +2640,7 @@ function WeekReleases({ releases, center, onEdit }: {
   onEdit: (id: ID) => void;
 }) {
   const [rect, setRect] = useState<DOMRect | null>(null);
+  const moreRef = useRef<HTMLButtonElement>(null);
   if (!releases?.length) return null;
   const shown = releases.length > 3 ? releases.slice(0, 2) : releases;
   return (
@@ -2668,6 +2669,7 @@ function WeekReleases({ releases, center, onEdit }: {
       {shown.length < releases.length && (
         <li>
           <button
+            ref={moreRef}
             type="button"
             onClick={e => { e.stopPropagation(); setRect(rect ? null : e.currentTarget.getBoundingClientRect()); }}
             aria-expanded={!!rect}
@@ -2678,9 +2680,10 @@ function WeekReleases({ releases, center, onEdit }: {
           {rect && (
             <ReleasesPopover
               rect={rect}
+              trigger={moreRef}
               releases={releases}
               onEdit={id => { setRect(null); onEdit(id); }}
-              onClose={() => setRect(null)}
+              onClose={refocus => { setRect(null); if (refocus) moreRef.current?.focus({ preventScroll: true }); }}
             />
           )}
         </li>
@@ -2691,17 +2694,33 @@ function WeekReleases({ releases, center, onEdit }: {
 
 function ReleasesPopover(props: {
   rect: DOMRect;
+  trigger: React.RefObject<HTMLElement | null>;
   releases: ScheduledRelease[];
   onEdit: (id: ID) => void;
-  onClose: () => void;
+  /** `refocus` is true when focus should return to the trigger. */
+  onClose: (refocus: boolean) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
-  const { onClose } = props;
+  const { onClose, trigger } = props;
+  const [top, setTop] = useState(props.rect.bottom + 6);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const h = el.offsetHeight;
+    const below = props.rect.bottom + 6;
+    if (below + h > window.innerHeight - 8) {
+      const above = props.rect.top - 6 - h;
+      setTop(above >= 8 ? above : Math.max(8, window.innerHeight - 8 - h));
+    }
+    el.querySelector('button')?.focus({ preventScroll: true });
+  }, [props.rect]);
   useEffect(() => {
     const onDoc = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+      const t = e.target as Node;
+      if (ref.current?.contains(t) || trigger.current?.contains(t)) return;
+      onClose(false);
     };
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(true); };
     document.addEventListener('mousedown', onDoc);
     document.addEventListener('keydown', onKey);
     return () => {
@@ -2719,8 +2738,8 @@ function ReleasesPopover(props: {
       role="dialog"
       aria-label="Releases"
       onClick={e => e.stopPropagation()}
-      className="anim-pop-in fixed z-50 flex flex-col gap-0.5 rounded-xl border border-ink-200 bg-white p-1.5 shadow-2xl"
-      style={{ top: props.rect.bottom + 6, left, width: w }}
+      className="anim-pop-in fixed z-50 flex flex-col gap-0.5 overflow-y-auto rounded-xl border border-ink-200 bg-white p-1.5 shadow-2xl"
+      style={{ top, left, width: w, maxHeight: 'calc(100vh - 16px)' }}
     >
       {props.releases.map(r => {
         const d = describeRelease(r);
@@ -2730,7 +2749,7 @@ function ReleasesPopover(props: {
             type="button"
             onClick={() => props.onEdit(r.project.id)}
             title="Edit project"
-            className="flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left transition hover:bg-ink-100"
+            className="flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left transition hover:bg-ink-100 focus-visible:bg-ink-100 focus-visible:outline-none"
           >
             <span className={'mt-0.5 ' + (r.forecast ? RELEASE_TEXT[r.forecast.status] : 'text-ink-600')}><RocketIcon /></span>
             <span className="min-w-0 flex-1">
