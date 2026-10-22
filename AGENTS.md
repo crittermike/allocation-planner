@@ -4,7 +4,7 @@ Guidance for agents working on this app.
 
 ## App overview
 
-- This is a Vite + React 18 + TypeScript + Tailwind v4 frontend with a Node 20 Express + `ws` backend.
+- This is a Vite + React 18 + TypeScript + Tailwind v4 frontend with a Node 24 Express + `ws` backend.
 - The app is a realtime allocation planner: people, projects, two-week iterations, assignment chips, week notes, and quarter-level capacity planning (engineering-month estimates vs. computed capacity).
 - The server stores each plan as one JSON blob in SQLite (`plans.state`) and broadcasts full-state updates over WebSockets to everyone watching the same slug.
 - Production is a single Docker container: the server serves `/api`, `/ws`, and the built frontend from `dist/`.
@@ -17,7 +17,7 @@ Guidance for agents working on this app.
 - Production server: `npm start`
 - Deploy: automatic on every push to `main` after CI passes (`deploy` job in `.github/workflows/ci.yml`, uses the `FLY_API_TOKEN` repo secret). Manual: `~/.fly/bin/flyctl deploy` (Fly.io app is `allocation-planner`; `fly deploy` works if `flyctl` is on PATH)
 
-Run `npm run build` before claiming code changes are complete — it both typechecks (`tsc -b`) and bundles. Run `npm test` for unit tests (`node --test test/*.test.ts`). There is no lint script. GitHub Actions (`.github/workflows/ci.yml`) runs the same build on every push to `main` and on every PR, then deploys `main` to Fly.
+Run `npm run build` before claiming code changes are complete — it both typechecks (`tsc -b`) and bundles. Run `npm test` for unit and server tests (`node --test test/*.test.ts`; `test/server.test.ts` starts the real server on a temp `DATA_DIR` with no GitHub token). Run `npm run test:e2e` for the Playwright smoke test (needs `npm run build` first and `npx playwright install chromium` once). There is no lint script. GitHub Actions (`.github/workflows/ci.yml`) runs the build, `npm test`, and the smoke test on every push to `main` and on every PR, then deploys `main` to Fly only if all pass.
 
 ## Important files
 
@@ -43,7 +43,7 @@ Run `npm run build` before claiming code changes are complete — it both typech
 - `server/index.js`: SQLite schema + migrations (password columns are idempotent `ALTER TABLE`s), REST API, static frontend serving, WebSocket room management (one room per slug), and the initial plan state used when a new plan is created. Loads `.env` from the repo root when present.
 - `server/scope.js`: GitHub connector for scope tracking. Reads an issue's sub-issue tree and each issue's history over GraphQL with `GITHUB_TOKEN` (a milestone's small parent epic is fetched too, for moves and finished milestones' pace), caches the last complete result per issue in the `scope_cache` table, and refreshes in the background after 15 minutes. Partial or failed fetches never replace cached data.
 - `Dockerfile`, `fly.toml`: Fly.io deployment and production container setup. `min_machines_running = 1` keeps WS reconnects snappy.
-- `.github/workflows/ci.yml`: typecheck + build on push to `main` and on PRs.
+- `.github/workflows/ci.yml`: typecheck, build, unit/server tests, and Playwright smoke test (`e2e/`, Chromium only) on push to `main` and on PRs; deploys `main` to Fly after they pass.
 
 ## State and sync notes
 

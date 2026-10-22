@@ -21,7 +21,7 @@ Not really a Gantt chart (no time-spanning bars, no dependencies) — it's a cap
 ## Stack
 
 - **Frontend:** Vite + React 18 + TypeScript + Tailwind v4
-- **Backend:** Node 20 + Express + `ws` + better-sqlite3
+- **Backend:** Node 24 + Express + `ws` + better-sqlite3
 - **Deployment:** Single Docker container (server serves both the API and the built frontend)
 
 ## Local development

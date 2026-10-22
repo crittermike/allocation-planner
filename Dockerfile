@@ -1,5 +1,5 @@
 # --- build stage ---
-FROM node:20-bookworm-slim AS build
+FROM node:24-bookworm-slim AS build
 WORKDIR /app
 
 # Install dependencies (including devDependencies needed for the build).
@@ -14,7 +14,7 @@ RUN npm run build
 RUN npm prune --omit=dev
 
 # --- runtime stage ---
-FROM node:20-bookworm-slim AS runtime
+FROM node:24-bookworm-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=8787
