@@ -97,9 +97,9 @@ export const FORECAST_WINDOW_DAYS = 28;
 /** Weeks after work starts until a milestone's own pace fully replaces finished milestones' pace. */
 export const RAMP_WEEKS = 4;
 /** With no finished milestone to compare with, no forecast until work has run this long… */
-export const MIN_HISTORY_DAYS = 14;
+export const MIN_HISTORY_DAYS = 7;
 /** …and this many points were finished. */
-export const MIN_COMPLETIONS = 15;
+export const MIN_COMPLETIONS = 5;
 /** New points per finished point at which creep counts as high. */
 export const HIGH_CREEP_RATIO = 0.5;
 /** Projections further out are reported without a date. */
