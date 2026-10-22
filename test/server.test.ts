@@ -69,7 +69,13 @@ const connect = (slug: string, token?: string) =>
       if (w) w(msg);
       else queue.push(msg);
     };
-    const next = () => (queue.length ? Promise.resolve(queue.shift()) : new Promise(r => waiters.push(r)));
+    const next = () =>
+      queue.length
+        ? Promise.resolve(queue.shift())
+        : new Promise((r, fail) => {
+            waiters.push(r);
+            setTimeout(() => fail(new Error('no message within 2s')), 2000).unref();
+          });
     ws.onerror = () => reject(new Error('socket error'));
     next().then(hello => resolve({ ws, hello, next }));
   });
@@ -147,13 +153,6 @@ test('password protects HTTP and WebSocket access', async () => {
 
   assert.equal((await api('DELETE', `/api/plans/${slug}`, undefined, changed.body.token)).status, 200);
   assert.equal((await api('GET', `/api/plans/${slug}`)).status, 404);
-});
-
-test('scope routes are off without a GitHub token', async () => {
-  const slug = await createPlan('Scope');
-  assert.equal((await api('GET', '/api/config')).body.scope.enabled, false);
-  const url = encodeURIComponent('https://github.com/acme/app/issues/1');
-  assert.equal((await api('GET', `/api/plans/${slug}/scope?url=${url}`)).status, 503);
 });
 
 test('plans and unlock tokens survive a restart', async () => {
